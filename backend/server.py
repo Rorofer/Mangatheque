@@ -12,6 +12,7 @@ from datetime import datetime
 import httpx
 from enum import Enum
 from emergentintegrations.llm.chat import LlmChat, UserMessage
+import asyncio
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -88,6 +89,96 @@ class StatusCheckCreate(BaseModel):
 @api_router.get("/")
 async def root():
     return {"message": "Anime & Manga Tracker API"}
+
+# Get anime/manga relations (franchise)
+@api_router.get("/relations/{media_type}/{mal_id}")
+async def get_relations(media_type: MediaType, mal_id: int):
+    """Get related anime/manga (sequels, prequels, spin-offs, etc.)"""
+    try:
+        async with httpx.AsyncClient() as http_client:
+            # Get relations
+            relations_response = await http_client.get(
+                f"{JIKAN_API_BASE}/{media_type.value}/{mal_id}/relations",
+                timeout=30.0
+            )
+            relations_response.raise_for_status()
+            relations_data = relations_response.json()
+            
+            # Filter and format relations
+            related_items = []
+            relation_types_priority = ["Sequel", "Prequel", "Parent story", "Side story", "Summary", "Full story", "Spin-off", "Alternative version", "Alternative setting"]
+            
+            for relation in relations_data.get("data", []):
+                relation_type = relation.get("relation", "")
+                entries = relation.get("entry", [])
+                
+                for entry in entries:
+                    # Only include anime/manga entries
+                    entry_type = entry.get("type", "").lower()
+                    if entry_type == media_type.value:
+                        related_items.append({
+                            "mal_id": entry.get("mal_id"),
+                            "title": entry.get("name"),
+                            "relation_type": relation_type,
+                            "media_type": entry_type,
+                        })
+            
+            # Sort by relation type priority
+            def sort_key(item):
+                try:
+                    return relation_types_priority.index(item["relation_type"])
+                except ValueError:
+                    return len(relation_types_priority)
+            
+            related_items.sort(key=sort_key)
+            
+            # Get additional details for each related item (limited to first 10)
+            detailed_items = []
+            for item in related_items[:10]:
+                try:
+                    # Add delay to respect API rate limits
+                    await asyncio.sleep(0.35)
+                    detail_response = await http_client.get(
+                        f"{JIKAN_API_BASE}/{media_type.value}/{item['mal_id']}",
+                        timeout=15.0
+                    )
+                    if detail_response.status_code == 200:
+                        detail_data = detail_response.json().get("data", {})
+                        detailed_items.append({
+                            "mal_id": item["mal_id"],
+                            "title": detail_data.get("title", item["title"]),
+                            "title_english": detail_data.get("title_english"),
+                            "image_url": detail_data.get("images", {}).get("jpg", {}).get("large_image_url") or detail_data.get("images", {}).get("jpg", {}).get("image_url"),
+                            "synopsis": detail_data.get("synopsis"),
+                            "score": detail_data.get("score"),
+                            "episodes": detail_data.get("episodes"),
+                            "chapters": detail_data.get("chapters"),
+                            "media_type": media_type.value,
+                            "relation_type": item["relation_type"],
+                            "status": detail_data.get("status"),
+                        })
+                except Exception as e:
+                    logger.warning(f"Failed to get details for {item['mal_id']}: {e}")
+                    detailed_items.append({
+                        **item,
+                        "title_english": None,
+                        "image_url": None,
+                        "synopsis": None,
+                        "score": None,
+                        "episodes": None,
+                        "chapters": None,
+                        "status": None,
+                    })
+            
+            return {"data": detailed_items}
+            
+    except httpx.TimeoutException:
+        raise HTTPException(status_code=504, detail="Request timed out")
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=e.response.status_code, detail="Error from Jikan API")
+    except Exception as e:
+        logger.error(f"Relations error: {str(e)}")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 # Search anime/manga via Jikan API
 @api_router.get("/search/{media_type}")

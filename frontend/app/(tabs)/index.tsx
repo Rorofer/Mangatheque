@@ -38,12 +38,26 @@ interface MediaItem {
   status: string | null;
   aired: string | null;
   published: string | null;
+  relation_type?: string;
 }
 
 interface Translation {
   title_fr: string;
   synopsis_fr: string | null;
 }
+
+const RELATION_TYPES_FR: {[key: string]: string} = {
+  'Sequel': 'Suite',
+  'Prequel': 'Préquelle',
+  'Parent story': 'Histoire principale',
+  'Side story': 'Histoire parallèle',
+  'Summary': 'Résumé',
+  'Full story': 'Histoire complète',
+  'Spin-off': 'Spin-off',
+  'Alternative version': 'Version alternative',
+  'Alternative setting': 'Univers alternatif',
+  'Other': 'Autre',
+};
 
 export default function SearchScreen() {
   const [searchQuery, setSearchQuery] = useState('');
@@ -59,6 +73,10 @@ export default function SearchScreen() {
   const [translating, setTranslating] = useState(false);
   const [titleTranslations, setTitleTranslations] = useState<{[key: string]: string}>({});
   const [translatingTitles, setTranslatingTitles] = useState(false);
+  const [relatedItems, setRelatedItems] = useState<MediaItem[]>([]);
+  const [loadingRelations, setLoadingRelations] = useState(false);
+  const [relatedTranslations, setRelatedTranslations] = useState<{[key: string]: string}>({});
+  const [addingRelatedId, setAddingRelatedId] = useState<number | null>(null);
 
   const search = useCallback(async () => {
     if (!searchQuery.trim()) return;
@@ -101,7 +119,7 @@ export default function SearchScreen() {
             items: searchResults.map((item: MediaItem) => ({
               mal_id: item.mal_id,
               title: item.title,
-              synopsis: null // Don't translate synopsis in batch for performance
+              synopsis: null
             }))
           });
           
@@ -141,8 +159,63 @@ export default function SearchScreen() {
     }
   };
 
+  const fetchRelations = async (item: MediaItem) => {
+    setLoadingRelations(true);
+    setRelatedItems([]);
+    setRelatedTranslations({});
+    
+    try {
+      const response = await axios.get(
+        `${API_BASE}/api/relations/${item.media_type}/${item.mal_id}`,
+        { timeout: 60000 }
+      );
+      const relations = response.data.data;
+      setRelatedItems(relations);
+      
+      // Update library status for related items
+      try {
+        const libraryResponse = await axios.get(`${API_BASE}/api/library`);
+        const libraryItems = libraryResponse.data;
+        const statusMap: {[key: string]: LibraryStatus | null} = { ...libraryStatus };
+        
+        for (const relItem of relations) {
+          const libraryItem = libraryItems.find(
+            (li: any) => li.mal_id === relItem.mal_id && li.media_type === relItem.media_type
+          );
+          statusMap[`${relItem.mal_id}-${relItem.media_type}`] = libraryItem ? libraryItem.status : null;
+        }
+        setLibraryStatus(statusMap);
+      } catch {}
+      
+      // Translate related titles
+      if (relations.length > 0) {
+        try {
+          const batchResponse = await axios.post(`${API_BASE}/api/translate/batch`, {
+            items: relations.map((r: MediaItem) => ({
+              mal_id: r.mal_id,
+              title: r.title,
+              synopsis: null
+            }))
+          });
+          
+          const translationsMap: {[key: string]: string} = {};
+          for (const [malId, trans] of Object.entries(batchResponse.data.translations)) {
+            translationsMap[malId] = (trans as Translation).title_fr;
+          }
+          setRelatedTranslations(translationsMap);
+        } catch {}
+      }
+    } catch (error) {
+      console.error('Relations error:', error);
+    } finally {
+      setLoadingRelations(false);
+    }
+  };
+
   const openModal = async (item: MediaItem) => {
     setSelectedItem(item);
+    setRelatedItems([]);
+    setRelatedTranslations({});
     // Use cached title translation if available
     const cachedTitle = titleTranslations[String(item.mal_id)];
     if (cachedTitle) {
@@ -153,10 +226,17 @@ export default function SearchScreen() {
     setModalVisible(true);
     // Fetch full translation including synopsis
     translateContent(item);
+    // Fetch related anime/manga
+    fetchRelations(item);
   };
 
-  const addToLibrary = async (item: MediaItem, status: LibraryStatus) => {
-    setAddingToLibrary(true);
+  const addToLibrary = async (item: MediaItem, status: LibraryStatus, isRelated: boolean = false) => {
+    if (isRelated) {
+      setAddingRelatedId(item.mal_id);
+    } else {
+      setAddingToLibrary(true);
+    }
+    
     try {
       await axios.post(`${API_BASE}/api/library`, {
         mal_id: item.mal_id,
@@ -175,7 +255,11 @@ export default function SearchScreen() {
         ...prev,
         [`${item.mal_id}-${item.media_type}`]: status,
       }));
-      setModalVisible(false);
+      
+      if (!isRelated) {
+        // Don't close modal if adding related item
+        setModalVisible(false);
+      }
     } catch (error: any) {
       if (error.response?.status === 400) {
         if (Platform.OS === 'web') {
@@ -188,12 +272,62 @@ export default function SearchScreen() {
         }
       }
     } finally {
-      setAddingToLibrary(false);
+      if (isRelated) {
+        setAddingRelatedId(null);
+      } else {
+        setAddingToLibrary(false);
+      }
     }
+  };
+
+  const addAllToLibrary = async (status: LibraryStatus) => {
+    if (!selectedItem) return;
+    
+    setAddingToLibrary(true);
+    
+    // Add main item first
+    const itemsToAdd = [selectedItem, ...relatedItems];
+    
+    for (const item of itemsToAdd) {
+      const existingStatus = libraryStatus[`${item.mal_id}-${item.media_type}`];
+      if (!existingStatus) {
+        try {
+          await axios.post(`${API_BASE}/api/library`, {
+            mal_id: item.mal_id,
+            media_type: item.media_type,
+            title: item.title,
+            title_english: item.title_english,
+            image_url: item.image_url,
+            synopsis: item.synopsis,
+            score: item.score,
+            episodes: item.episodes,
+            chapters: item.chapters,
+            status: status,
+          });
+          
+          setLibraryStatus(prev => ({
+            ...prev,
+            [`${item.mal_id}-${item.media_type}`]: status,
+          }));
+        } catch (error: any) {
+          console.error('Add error:', error);
+        }
+      }
+    }
+    
+    setAddingToLibrary(false);
+    setModalVisible(false);
   };
 
   const getCardTitle = (item: MediaItem) => {
     const translatedTitle = titleTranslations[String(item.mal_id)];
+    if (translatedTitle) return translatedTitle;
+    if (item.title_english) return item.title_english;
+    return item.title;
+  };
+
+  const getRelatedTitle = (item: MediaItem) => {
+    const translatedTitle = relatedTranslations[String(item.mal_id)];
     if (translatedTitle) return translatedTitle;
     if (item.title_english) return item.title_english;
     return item.title;
@@ -274,6 +408,78 @@ export default function SearchScreen() {
   const getDisplaySynopsis = () => {
     if (translation?.synopsis_fr) return translation.synopsis_fr;
     return selectedItem?.synopsis || '';
+  };
+
+  const renderRelatedItem = (item: MediaItem) => {
+    const itemStatus = libraryStatus[`${item.mal_id}-${item.media_type}`];
+    const displayTitle = getRelatedTitle(item);
+    const isAdding = addingRelatedId === item.mal_id;
+    
+    return (
+      <View key={item.mal_id} style={styles.relatedCard}>
+        <Image
+          source={{ uri: item.image_url || 'https://via.placeholder.com/60x90' }}
+          style={styles.relatedImage}
+          resizeMode="cover"
+        />
+        <View style={styles.relatedContent}>
+          <View style={styles.relatedTypeContainer}>
+            <Text style={styles.relatedType}>
+              {RELATION_TYPES_FR[item.relation_type || ''] || item.relation_type}
+            </Text>
+          </View>
+          <Text style={styles.relatedTitle} numberOfLines={2}>
+            {displayTitle}
+          </Text>
+          <View style={styles.relatedMeta}>
+            {item.score && (
+              <View style={styles.relatedScoreBadge}>
+                <Ionicons name="star" size={10} color="#ffd700" />
+                <Text style={styles.relatedScoreText}>{item.score.toFixed(1)}</Text>
+              </View>
+            )}
+            {item.episodes && (
+              <Text style={styles.relatedMetaText}>{item.episodes} ép.</Text>
+            )}
+          </View>
+        </View>
+        <View style={styles.relatedActions}>
+          {itemStatus ? (
+            <View style={[
+              styles.relatedStatusBadge,
+              itemStatus === 'watched' ? styles.watchedBadge : styles.watchlistBadge
+            ]}>
+              <Ionicons 
+                name={itemStatus === 'watched' ? 'checkmark' : 'time'} 
+                size={14} 
+                color="#fff" 
+              />
+            </View>
+          ) : (
+            <View style={styles.relatedButtonsContainer}>
+              <TouchableOpacity
+                style={[styles.relatedButton, styles.watchedButtonSmall]}
+                onPress={() => addToLibrary(item, 'watched', true)}
+                disabled={isAdding}
+              >
+                {isAdding ? (
+                  <ActivityIndicator size="small" color="#fff" />
+                ) : (
+                  <Ionicons name="checkmark" size={16} color="#fff" />
+                )}
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.relatedButton, styles.watchlistButtonSmall]}
+                onPress={() => addToLibrary(item, 'watchlist', true)}
+                disabled={isAdding}
+              >
+                <Ionicons name="time" size={16} color="#fff" />
+              </TouchableOpacity>
+            </View>
+          )}
+        </View>
+      </View>
+    );
   };
 
   return (
@@ -450,6 +656,57 @@ export default function SearchScreen() {
                         </View>
                       ) : (
                         <Text style={styles.modalSynopsis}>{getDisplaySynopsis()}</Text>
+                      )}
+                    </View>
+                  )}
+                  
+                  {/* Related Items Section */}
+                  {(loadingRelations || relatedItems.length > 0) && (
+                    <View style={styles.relatedSection}>
+                      <View style={styles.relatedHeader}>
+                        <Ionicons name="git-branch" size={20} color="#e63946" />
+                        <Text style={styles.relatedSectionTitle}>
+                          Franchise / Série ({relatedItems.length})
+                        </Text>
+                      </View>
+                      
+                      {loadingRelations ? (
+                        <View style={styles.relatedLoading}>
+                          <ActivityIndicator size="small" color="#e63946" />
+                          <Text style={styles.relatedLoadingText}>Chargement des épisodes liés...</Text>
+                        </View>
+                      ) : (
+                        <>
+                          {relatedItems.map(renderRelatedItem)}
+                          
+                          {/* Add all button */}
+                          {relatedItems.some(item => !libraryStatus[`${item.mal_id}-${item.media_type}`]) && (
+                            <View style={styles.addAllContainer}>
+                              <TouchableOpacity
+                                style={[styles.addAllButton, styles.watchedButton]}
+                                onPress={() => addAllToLibrary('watched')}
+                                disabled={addingToLibrary}
+                              >
+                                {addingToLibrary ? (
+                                  <ActivityIndicator size="small" color="#fff" />
+                                ) : (
+                                  <>
+                                    <Ionicons name="checkmark-done" size={18} color="#fff" />
+                                    <Text style={styles.addAllButtonText}>Tout marquer comme vu</Text>
+                                  </>
+                                )}
+                              </TouchableOpacity>
+                              <TouchableOpacity
+                                style={[styles.addAllButton, styles.watchlistButton]}
+                                onPress={() => addAllToLibrary('watchlist')}
+                                disabled={addingToLibrary}
+                              >
+                                <Ionicons name="time" size={18} color="#fff" />
+                                <Text style={styles.addAllButtonText}>Tout à voir</Text>
+                              </TouchableOpacity>
+                            </View>
+                          )}
+                        </>
                       )}
                     </View>
                   )}
@@ -733,11 +990,6 @@ const styles = StyleSheet.create({
     fontStyle: 'italic',
     marginBottom: 12,
   },
-  modalSubtitle: {
-    fontSize: 16,
-    color: '#888',
-    marginBottom: 12,
-  },
   modalMeta: {
     flexDirection: 'row',
     gap: 16,
@@ -769,6 +1021,132 @@ const styles = StyleSheet.create({
     color: '#aaa',
     fontSize: 14,
     lineHeight: 22,
+  },
+  // Related Items Styles
+  relatedSection: {
+    marginBottom: 20,
+    backgroundColor: '#252525',
+    borderRadius: 12,
+    padding: 16,
+  },
+  relatedHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 16,
+  },
+  relatedSectionTitle: {
+    fontSize: 18,
+    fontWeight: '600',
+    color: '#fff',
+  },
+  relatedLoading: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    paddingVertical: 20,
+  },
+  relatedLoadingText: {
+    color: '#888',
+    fontSize: 14,
+  },
+  relatedCard: {
+    flexDirection: 'row',
+    backgroundColor: '#1a1a1a',
+    borderRadius: 10,
+    marginBottom: 10,
+    overflow: 'hidden',
+  },
+  relatedImage: {
+    width: 60,
+    height: 85,
+  },
+  relatedContent: {
+    flex: 1,
+    padding: 10,
+    justifyContent: 'center',
+  },
+  relatedTypeContainer: {
+    marginBottom: 4,
+  },
+  relatedType: {
+    fontSize: 11,
+    color: '#e63946',
+    fontWeight: '600',
+    textTransform: 'uppercase',
+  },
+  relatedTitle: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#fff',
+    marginBottom: 4,
+  },
+  relatedMeta: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  relatedScoreBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+  },
+  relatedScoreText: {
+    color: '#ffd700',
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  relatedMetaText: {
+    color: '#888',
+    fontSize: 12,
+  },
+  relatedActions: {
+    justifyContent: 'center',
+    paddingRight: 10,
+  },
+  relatedStatusBadge: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  relatedButtonsContainer: {
+    flexDirection: 'column',
+    gap: 6,
+  },
+  relatedButton: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  watchedButtonSmall: {
+    backgroundColor: '#4caf50',
+  },
+  watchlistButtonSmall: {
+    backgroundColor: '#ff9800',
+  },
+  addAllContainer: {
+    flexDirection: 'row',
+    gap: 10,
+    marginTop: 12,
+  },
+  addAllButton: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingVertical: 12,
+    borderRadius: 10,
+  },
+  addAllButtonText: {
+    color: '#fff',
+    fontSize: 13,
+    fontWeight: '600',
   },
   actionButtons: {
     gap: 12,
