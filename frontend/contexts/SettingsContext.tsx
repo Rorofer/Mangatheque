@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
-import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as SecureStore from 'expo-secure-store';
+import { Platform } from 'react-native';
 
 interface WallpaperSettings {
   imageUrl: string | null;
@@ -21,7 +22,58 @@ const defaultSettings: WallpaperSettings = {
 
 const SettingsContext = createContext<SettingsContextType | undefined>(undefined);
 
-const WALLPAPER_STORAGE_KEY = '@anime_tracker_wallpaper';
+const WALLPAPER_STORAGE_KEY = 'anime_tracker_wallpaper';
+
+// Simple in-memory storage fallback for web
+let webStorage: { [key: string]: string } = {};
+
+async function getItem(key: string): Promise<string | null> {
+  try {
+    if (Platform.OS === 'web') {
+      // Use localStorage on web
+      if (typeof window !== 'undefined' && window.localStorage) {
+        return window.localStorage.getItem(key);
+      }
+      return webStorage[key] || null;
+    }
+    return await SecureStore.getItemAsync(key);
+  } catch (error) {
+    console.warn('Storage getItem error:', error);
+    return null;
+  }
+}
+
+async function setItem(key: string, value: string): Promise<void> {
+  try {
+    if (Platform.OS === 'web') {
+      if (typeof window !== 'undefined' && window.localStorage) {
+        window.localStorage.setItem(key, value);
+      } else {
+        webStorage[key] = value;
+      }
+      return;
+    }
+    await SecureStore.setItemAsync(key, value);
+  } catch (error) {
+    console.warn('Storage setItem error:', error);
+  }
+}
+
+async function removeItem(key: string): Promise<void> {
+  try {
+    if (Platform.OS === 'web') {
+      if (typeof window !== 'undefined' && window.localStorage) {
+        window.localStorage.removeItem(key);
+      } else {
+        delete webStorage[key];
+      }
+      return;
+    }
+    await SecureStore.deleteItemAsync(key);
+  } catch (error) {
+    console.warn('Storage removeItem error:', error);
+  }
+}
 
 export function SettingsProvider({ children }: { children: ReactNode }) {
   const [wallpaper, setWallpaperState] = useState<WallpaperSettings>(defaultSettings);
@@ -34,12 +86,13 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
 
   const loadSettings = async () => {
     try {
-      const stored = await AsyncStorage.getItem(WALLPAPER_STORAGE_KEY);
+      const stored = await getItem(WALLPAPER_STORAGE_KEY);
       if (stored) {
-        setWallpaperState(JSON.parse(stored));
+        const parsed = JSON.parse(stored);
+        setWallpaperState(parsed);
       }
     } catch (error) {
-      console.error('Failed to load wallpaper settings:', error);
+      console.warn('Failed to load wallpaper settings:', error);
     } finally {
       setIsLoaded(true);
     }
@@ -47,19 +100,22 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
 
   const setWallpaper = async (settings: WallpaperSettings) => {
     try {
-      await AsyncStorage.setItem(WALLPAPER_STORAGE_KEY, JSON.stringify(settings));
+      await setItem(WALLPAPER_STORAGE_KEY, JSON.stringify(settings));
       setWallpaperState(settings);
     } catch (error) {
-      console.error('Failed to save wallpaper settings:', error);
+      console.warn('Failed to save wallpaper settings:', error);
+      // Still update state even if storage fails
+      setWallpaperState(settings);
     }
   };
 
   const clearWallpaper = async () => {
     try {
-      await AsyncStorage.removeItem(WALLPAPER_STORAGE_KEY);
+      await removeItem(WALLPAPER_STORAGE_KEY);
       setWallpaperState(defaultSettings);
     } catch (error) {
-      console.error('Failed to clear wallpaper settings:', error);
+      console.warn('Failed to clear wallpaper settings:', error);
+      setWallpaperState(defaultSettings);
     }
   };
 

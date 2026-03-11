@@ -1,8 +1,6 @@
 import React, { useState } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, Dimensions, Platform, ImageBackground } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { GestureDetector, Gesture, GestureHandlerRootView } from 'react-native-gesture-handler';
-import Animated, { useSharedValue, useAnimatedStyle, withSpring, runOnJS } from 'react-native-reanimated';
 import SearchScreen from './index';
 import LibraryScreen from './library';
 import SettingsModal from './settings';
@@ -14,7 +12,6 @@ export default function TabLayout() {
   const [currentPage, setCurrentPage] = useState(0);
   const [showSettings, setShowSettings] = useState(false);
   const { wallpaper } = useSettings();
-  const translateX = useSharedValue(0);
 
   const tabs = [
     { key: 'search', title: 'Recherche', icon: 'search' },
@@ -23,41 +20,10 @@ export default function TabLayout() {
 
   const handleTabPress = (index: number) => {
     setCurrentPage(index);
-    translateX.value = withSpring(-index * SCREEN_WIDTH, { damping: 20, stiffness: 90 });
   };
-
-  const changePage = (newPage: number) => {
-    setCurrentPage(newPage);
-  };
-
-  const panGesture = Gesture.Pan()
-    .onUpdate((event) => {
-      const newTranslateX = -currentPage * SCREEN_WIDTH + event.translationX;
-      // Limit the drag to prevent going beyond pages
-      if (newTranslateX <= 0 && newTranslateX >= -SCREEN_WIDTH) {
-        translateX.value = newTranslateX;
-      }
-    })
-    .onEnd((event) => {
-      const threshold = SCREEN_WIDTH / 4;
-      let newPage = currentPage;
-      
-      if (event.translationX < -threshold && currentPage < 1) {
-        newPage = 1;
-      } else if (event.translationX > threshold && currentPage > 0) {
-        newPage = 0;
-      }
-      
-      translateX.value = withSpring(-newPage * SCREEN_WIDTH, { damping: 20, stiffness: 90 });
-      runOnJS(changePage)(newPage);
-    });
-
-  const animatedStyle = useAnimatedStyle(() => ({
-    transform: [{ translateX: translateX.value }],
-  }));
 
   const renderContent = () => (
-    <>
+    <View style={styles.contentContainer}>
       {/* Settings Button */}
       <TouchableOpacity
         style={styles.settingsButton}
@@ -66,19 +32,10 @@ export default function TabLayout() {
         <Ionicons name="settings-outline" size={24} color="#fff" />
       </TouchableOpacity>
 
-      {/* Swipeable Content */}
-      <GestureHandlerRootView style={styles.gestureContainer}>
-        <GestureDetector gesture={panGesture}>
-          <Animated.View style={[styles.pagesContainer, animatedStyle]}>
-            <View style={styles.page}>
-              <SearchScreen />
-            </View>
-            <View style={styles.page}>
-              <LibraryScreen />
-            </View>
-          </Animated.View>
-        </GestureDetector>
-      </GestureHandlerRootView>
+      {/* Screen Content */}
+      <View style={styles.screenContainer}>
+        {currentPage === 0 ? <SearchScreen /> : <LibraryScreen />}
+      </View>
 
       {/* Tab Bar */}
       <View style={styles.tabBar}>
@@ -109,7 +66,7 @@ export default function TabLayout() {
         visible={showSettings} 
         onClose={() => setShowSettings(false)} 
       />
-    </>
+    </View>
   );
 
   return (
@@ -145,6 +102,9 @@ const styles = StyleSheet.create({
     ...StyleSheet.absoluteFillObject,
     backgroundColor: '#0f0f0f',
   },
+  contentContainer: {
+    flex: 1,
+  },
   settingsButton: {
     position: 'absolute',
     top: Platform.OS === 'ios' ? 50 : 40,
@@ -157,17 +117,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
   },
-  gestureContainer: {
-    flex: 1,
-    overflow: 'hidden',
-  },
-  pagesContainer: {
-    flexDirection: 'row',
-    width: SCREEN_WIDTH * 2,
-    flex: 1,
-  },
-  page: {
-    width: SCREEN_WIDTH,
+  screenContainer: {
     flex: 1,
   },
   tabBar: {
