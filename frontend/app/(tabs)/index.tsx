@@ -57,6 +57,8 @@ export default function SearchScreen() {
   const [libraryStatus, setLibraryStatus] = useState<{[key: string]: LibraryStatus | null}>({});
   const [translation, setTranslation] = useState<Translation | null>(null);
   const [translating, setTranslating] = useState(false);
+  const [titleTranslations, setTitleTranslations] = useState<{[key: string]: string}>({});
+  const [translatingTitles, setTranslatingTitles] = useState(false);
 
   const search = useCallback(async () => {
     if (!searchQuery.trim()) return;
@@ -64,6 +66,7 @@ export default function SearchScreen() {
     Keyboard.dismiss();
     setLoading(true);
     setSearched(true);
+    setTitleTranslations({});
     
     try {
       const response = await axios.get(
@@ -73,7 +76,7 @@ export default function SearchScreen() {
       const searchResults = response.data.data;
       setResults(searchResults);
       
-      // Fetch library items once and build status map
+      // Fetch library items and build status map
       try {
         const libraryResponse = await axios.get(`${API_BASE}/api/library`);
         const libraryItems = libraryResponse.data;
@@ -87,8 +90,31 @@ export default function SearchScreen() {
         }
         setLibraryStatus(statusMap);
       } catch {
-        // Library fetch failed, continue without status
         setLibraryStatus({});
+      }
+      
+      // Batch translate titles
+      if (searchResults.length > 0) {
+        setTranslatingTitles(true);
+        try {
+          const batchResponse = await axios.post(`${API_BASE}/api/translate/batch`, {
+            items: searchResults.map((item: MediaItem) => ({
+              mal_id: item.mal_id,
+              title: item.title,
+              synopsis: null // Don't translate synopsis in batch for performance
+            }))
+          });
+          
+          const translationsMap: {[key: string]: string} = {};
+          for (const [malId, trans] of Object.entries(batchResponse.data.translations)) {
+            translationsMap[malId] = (trans as Translation).title_fr;
+          }
+          setTitleTranslations(translationsMap);
+        } catch (error) {
+          console.error('Batch translation error:', error);
+        } finally {
+          setTranslatingTitles(false);
+        }
       }
     } catch (error) {
       console.error('Search error:', error);
@@ -117,9 +143,15 @@ export default function SearchScreen() {
 
   const openModal = async (item: MediaItem) => {
     setSelectedItem(item);
-    setTranslation(null);
+    // Use cached title translation if available
+    const cachedTitle = titleTranslations[String(item.mal_id)];
+    if (cachedTitle) {
+      setTranslation({ title_fr: cachedTitle, synopsis_fr: null });
+    } else {
+      setTranslation(null);
+    }
     setModalVisible(true);
-    // Start translation in background
+    // Fetch full translation including synopsis
     translateContent(item);
   };
 
@@ -146,18 +178,32 @@ export default function SearchScreen() {
       setModalVisible(false);
     } catch (error: any) {
       if (error.response?.status === 400) {
-        alert('Cet élément est déjà dans votre bibliothèque');
+        if (Platform.OS === 'web') {
+          window.alert('Cet élément est déjà dans votre bibliothèque');
+        }
       } else {
         console.error('Add to library error:', error);
-        alert('Erreur lors de l\'ajout');
+        if (Platform.OS === 'web') {
+          window.alert('Erreur lors de l\'ajout');
+        }
       }
     } finally {
       setAddingToLibrary(false);
     }
   };
 
+  const getCardTitle = (item: MediaItem) => {
+    const translatedTitle = titleTranslations[String(item.mal_id)];
+    if (translatedTitle) return translatedTitle;
+    if (item.title_english) return item.title_english;
+    return item.title;
+  };
+
   const renderItem = ({ item }: { item: MediaItem }) => {
     const itemStatus = libraryStatus[`${item.mal_id}-${item.media_type}`];
+    const displayTitle = getCardTitle(item);
+    const showOriginalTitle = titleTranslations[String(item.mal_id)] && 
+                              titleTranslations[String(item.mal_id)] !== item.title;
     
     return (
       <TouchableOpacity
@@ -172,9 +218,14 @@ export default function SearchScreen() {
         />
         <View style={styles.cardContent}>
           <Text style={styles.cardTitle} numberOfLines={2}>
-            {item.title}
+            {displayTitle}
           </Text>
-          {item.title_english && item.title_english !== item.title && (
+          {showOriginalTitle && (
+            <Text style={styles.cardSubtitle} numberOfLines={1}>
+              {item.title}
+            </Text>
+          )}
+          {!showOriginalTitle && item.title_english && item.title_english !== item.title && (
             <Text style={styles.cardSubtitle} numberOfLines={1}>
               {item.title_english}
             </Text>
@@ -213,7 +264,7 @@ export default function SearchScreen() {
     );
   };
 
-  // Get display title and synopsis (prefer French translation)
+  // Get display title and synopsis for modal (prefer French translation)
   const getDisplayTitle = () => {
     if (translation?.title_fr) return translation.title_fr;
     if (selectedItem?.title_english) return selectedItem.title_english;
@@ -309,14 +360,23 @@ export default function SearchScreen() {
               <Text style={styles.emptyText}>Recherchez vos anime et manga préférés</Text>
             </View>
           ) : (
-            <FlashList
-              data={results}
-              renderItem={renderItem}
-              estimatedItemSize={130}
-              keyExtractor={(item) => `${item.mal_id}-${item.media_type}`}
-              contentContainerStyle={styles.listContent}
-              showsVerticalScrollIndicator={false}
-            />
+            <>
+              {translatingTitles && (
+                <View style={styles.translatingBanner}>
+                  <ActivityIndicator size="small" color="#e63946" />
+                  <Text style={styles.translatingBannerText}>Traduction des titres...</Text>
+                </View>
+              )}
+              <FlashList
+                data={results}
+                renderItem={renderItem}
+                estimatedItemSize={130}
+                keyExtractor={(item) => `${item.mal_id}-${item.media_type}`}
+                contentContainerStyle={styles.listContent}
+                showsVerticalScrollIndicator={false}
+                extraData={titleTranslations}
+              />
+            </>
           )}
         </View>
 
@@ -383,7 +443,7 @@ export default function SearchScreen() {
                   {/* Translated Synopsis */}
                   {(getDisplaySynopsis() || translating) && (
                     <View style={styles.synopsisContainer}>
-                      {translating && !translation ? (
+                      {translating && !translation?.synopsis_fr ? (
                         <View style={styles.translatingContainer}>
                           <ActivityIndicator size="small" color="#e63946" />
                           <Text style={styles.translatingText}>Traduction en cours...</Text>
@@ -537,6 +597,21 @@ const styles = StyleSheet.create({
     fontSize: 16,
     textAlign: 'center',
   },
+  translatingBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    paddingVertical: 8,
+    backgroundColor: '#1a1a1a',
+    marginHorizontal: 20,
+    borderRadius: 8,
+    marginBottom: 8,
+  },
+  translatingBannerText: {
+    color: '#888',
+    fontSize: 13,
+  },
   listContent: {
     paddingHorizontal: 20,
     paddingBottom: 20,
@@ -567,6 +642,7 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: '#888',
     marginBottom: 8,
+    fontStyle: 'italic',
   },
   cardMeta: {
     flexDirection: 'row',

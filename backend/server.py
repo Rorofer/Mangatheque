@@ -208,6 +208,105 @@ class TranslationResponse(BaseModel):
     title_fr: str
     synopsis_fr: Optional[str] = None
 
+class BatchTranslationRequest(BaseModel):
+    items: List[TranslationRequest]
+
+class BatchTranslationResponse(BaseModel):
+    translations: dict  # mal_id -> TranslationResponse
+
+@api_router.post("/translate/batch", response_model=BatchTranslationResponse)
+async def translate_batch(request: BatchTranslationRequest):
+    """Translate multiple anime/manga titles to French in batch"""
+    translations = {}
+    items_to_translate = []
+    
+    # Check cache first for all items
+    for item in request.items:
+        cache_key = f"{item.mal_id}"
+        
+        # Check memory cache
+        if cache_key in translation_cache:
+            translations[str(item.mal_id)] = translation_cache[cache_key]
+            continue
+        
+        # Check database cache
+        cached = await db.translations.find_one({"mal_id": item.mal_id})
+        if cached:
+            result = TranslationResponse(
+                title_fr=cached.get("title_fr", item.title),
+                synopsis_fr=cached.get("synopsis_fr")
+            )
+            translation_cache[cache_key] = result
+            translations[str(item.mal_id)] = result
+            continue
+        
+        items_to_translate.append(item)
+    
+    # Translate remaining items in batch
+    if items_to_translate and EMERGENT_LLM_KEY:
+        try:
+            # Build batch request for LLM
+            titles_list = "\n".join([f"- ID {item.mal_id}: {item.title}" for item in items_to_translate])
+            
+            chat = LlmChat(
+                api_key=EMERGENT_LLM_KEY,
+                session_id=f"batch-translate-{items_to_translate[0].mal_id}",
+                system_message="""Tu es un traducteur spécialisé dans les anime et manga.
+Traduis les titres en français de manière naturelle.
+Pour les titres qui ont une traduction officielle française connue (comme "L'Attaque des Titans" pour "Shingeki no Kyojin"), utilise-la.
+Pour les titres qui n'ont pas de traduction officielle (comme "Rascal Does Not Dream of Bunny Girl Senpai"), garde le titre anglais ou japonais original.
+Réponds UNIQUEMENT au format JSON sans markdown: {"ID": "titre_traduit", ...}
+Exemple: {"16498": "L'Attaque des Titans", "20": "Naruto", "37450": "Rascal Does Not Dream of Bunny Girl Senpai"}"""
+            ).with_model("openai", "gpt-4o-mini")
+            
+            user_message = UserMessage(text=f"Traduis ces titres d'anime/manga:\n{titles_list}")
+            response = await chat.send_message(user_message)
+            
+            # Parse response
+            import json
+            response_clean = response.strip()
+            if response_clean.startswith("```"):
+                response_clean = response_clean.split("```")[1]
+                if response_clean.startswith("json"):
+                    response_clean = response_clean[4:]
+            response_clean = response_clean.strip()
+            
+            translated_titles = json.loads(response_clean)
+            
+            # Save translations
+            for item in items_to_translate:
+                mal_id_str = str(item.mal_id)
+                title_fr = translated_titles.get(mal_id_str, item.title)
+                
+                result = TranslationResponse(title_fr=title_fr, synopsis_fr=None)
+                
+                # Save to database
+                await db.translations.update_one(
+                    {"mal_id": item.mal_id},
+                    {"$set": {
+                        "mal_id": item.mal_id,
+                        "title_fr": title_fr,
+                        "original_title": item.title
+                    }},
+                    upsert=True
+                )
+                
+                # Save to memory cache
+                translation_cache[mal_id_str] = result
+                translations[mal_id_str] = result
+                
+        except Exception as e:
+            logger.error(f"Batch translation error: {str(e)}")
+            # Return original titles on error
+            for item in items_to_translate:
+                translations[str(item.mal_id)] = TranslationResponse(title_fr=item.title, synopsis_fr=None)
+    else:
+        # No LLM key, return original titles
+        for item in items_to_translate:
+            translations[str(item.mal_id)] = TranslationResponse(title_fr=item.title, synopsis_fr=None)
+    
+    return BatchTranslationResponse(translations=translations)
+
 @api_router.post("/translate", response_model=TranslationResponse)
 async def translate_content(request: TranslationRequest):
     """Translate anime/manga title and synopsis to French"""
