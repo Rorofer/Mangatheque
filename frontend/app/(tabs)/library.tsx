@@ -6,10 +6,10 @@ import {
   TouchableOpacity,
   ActivityIndicator,
   Image,
-  Alert,
   RefreshControl,
   ScrollView,
   Modal,
+  Platform,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -38,6 +38,11 @@ interface LibraryItem {
   updated_at: string;
 }
 
+interface Translation {
+  title_fr: string;
+  synopsis_fr: string | null;
+}
+
 type FilterType = 'all' | 'watched' | 'watchlist';
 type MediaFilterType = 'all' | 'anime' | 'manga';
 
@@ -50,6 +55,10 @@ export default function LibraryScreen() {
   const [selectedItem, setSelectedItem] = useState<LibraryItem | null>(null);
   const [modalVisible, setModalVisible] = useState(false);
   const [updating, setUpdating] = useState(false);
+  const [confirmDeleteVisible, setConfirmDeleteVisible] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [translation, setTranslation] = useState<Translation | null>(null);
+  const [translating, setTranslating] = useState(false);
 
   const fetchLibrary = useCallback(async () => {
     try {
@@ -82,6 +91,30 @@ export default function LibraryScreen() {
     fetchLibrary();
   }, [fetchLibrary]);
 
+  const translateContent = async (item: LibraryItem) => {
+    setTranslating(true);
+    try {
+      const response = await axios.post(`${API_BASE}/api/translate`, {
+        title: item.title,
+        synopsis: item.synopsis,
+        mal_id: item.mal_id,
+      });
+      setTranslation(response.data);
+    } catch (error) {
+      console.error('Translation error:', error);
+      setTranslation(null);
+    } finally {
+      setTranslating(false);
+    }
+  };
+
+  const openModal = async (item: LibraryItem) => {
+    setSelectedItem(item);
+    setTranslation(null);
+    setModalVisible(true);
+    translateContent(item);
+  };
+
   const updateItemStatus = async (item: LibraryItem, newStatus: LibraryStatus) => {
     setUpdating(true);
     try {
@@ -94,43 +127,50 @@ export default function LibraryScreen() {
       setSelectedItem(prev => prev ? { ...prev, status: newStatus } : null);
     } catch (error) {
       console.error('Update error:', error);
-      Alert.alert('Erreur', 'Impossible de mettre à jour le statut');
+      // Show error in a cross-platform way
+      if (Platform.OS === 'web') {
+        window.alert('Impossible de mettre à jour le statut');
+      }
     } finally {
       setUpdating(false);
     }
   };
 
-  const deleteItem = async (item: LibraryItem) => {
-    Alert.alert(
-      'Confirmer la suppression',
-      `Voulez-vous supprimer "${item.title}" de votre bibliothèque ?`,
-      [
-        { text: 'Annuler', style: 'cancel' },
-        {
-          text: 'Supprimer',
-          style: 'destructive',
-          onPress: async () => {
-            try {
-              await axios.delete(`${API_BASE}/api/library/${item.id}`);
-              setItems(prev => prev.filter(i => i.id !== item.id));
-              setModalVisible(false);
-            } catch (error) {
-              console.error('Delete error:', error);
-              Alert.alert('Erreur', 'Impossible de supprimer l\'élément');
-            }
-          },
-        },
-      ]
-    );
+  const deleteItem = async () => {
+    if (!selectedItem) return;
+    
+    setDeleting(true);
+    try {
+      await axios.delete(`${API_BASE}/api/library/${selectedItem.id}`);
+      setItems(prev => prev.filter(i => i.id !== selectedItem.id));
+      setConfirmDeleteVisible(false);
+      setModalVisible(false);
+    } catch (error) {
+      console.error('Delete error:', error);
+      if (Platform.OS === 'web') {
+        window.alert('Impossible de supprimer l\'élément');
+      }
+    } finally {
+      setDeleting(false);
+    }
+  };
+
+  // Get display title and synopsis (prefer French translation)
+  const getDisplayTitle = () => {
+    if (translation?.title_fr) return translation.title_fr;
+    if (selectedItem?.title_english) return selectedItem.title_english;
+    return selectedItem?.title || '';
+  };
+
+  const getDisplaySynopsis = () => {
+    if (translation?.synopsis_fr) return translation.synopsis_fr;
+    return selectedItem?.synopsis || '';
   };
 
   const renderItem = ({ item }: { item: LibraryItem }) => (
     <TouchableOpacity
       style={styles.card}
-      onPress={() => {
-        setSelectedItem(item);
-        setModalVisible(true);
-      }}
+      onPress={() => openModal(item)}
       activeOpacity={0.7}
     >
       <Image
@@ -374,9 +414,19 @@ export default function LibraryScreen() {
                   </Text>
                 </View>
                 
-                <Text style={styles.modalTitle}>{selectedItem.title}</Text>
-                {selectedItem.title_english && selectedItem.title_english !== selectedItem.title && (
-                  <Text style={styles.modalSubtitle}>{selectedItem.title_english}</Text>
+                {/* Translated Title */}
+                <View style={styles.titleContainer}>
+                  <Text style={styles.modalTitle}>{getDisplayTitle()}</Text>
+                  {translating && (
+                    <ActivityIndicator size="small" color="#e63946" style={styles.translatingIndicator} />
+                  )}
+                </View>
+                
+                {/* Original title if different */}
+                {translation?.title_fr && translation.title_fr !== selectedItem.title && (
+                  <Text style={styles.originalTitle}>
+                    Titre original: {selectedItem.title}
+                  </Text>
                 )}
                 
                 <View style={styles.modalMeta}>
@@ -414,8 +464,18 @@ export default function LibraryScreen() {
                   </Text>
                 </View>
                 
-                {selectedItem.synopsis && (
-                  <Text style={styles.modalSynopsis}>{selectedItem.synopsis}</Text>
+                {/* Translated Synopsis */}
+                {(getDisplaySynopsis() || translating) && (
+                  <View style={styles.synopsisContainer}>
+                    {translating && !translation ? (
+                      <View style={styles.translatingContainer}>
+                        <ActivityIndicator size="small" color="#e63946" />
+                        <Text style={styles.translatingText}>Traduction en cours...</Text>
+                      </View>
+                    ) : (
+                      <Text style={styles.modalSynopsis}>{getDisplaySynopsis()}</Text>
+                    )}
+                  </View>
                 )}
                 
                 {/* Action Buttons */}
@@ -454,7 +514,7 @@ export default function LibraryScreen() {
                   
                   <TouchableOpacity
                     style={[styles.actionButton, styles.deleteButton]}
-                    onPress={() => deleteItem(selectedItem)}
+                    onPress={() => setConfirmDeleteVisible(true)}
                   >
                     <Ionicons name="trash" size={20} color="#fff" />
                     <Text style={styles.actionButtonText}>Supprimer</Text>
@@ -462,6 +522,46 @@ export default function LibraryScreen() {
                 </View>
               </ScrollView>
             )}
+          </View>
+        </View>
+      </Modal>
+
+      {/* Delete Confirmation Modal */}
+      <Modal
+        visible={confirmDeleteVisible}
+        animationType="fade"
+        transparent={true}
+        onRequestClose={() => setConfirmDeleteVisible(false)}
+      >
+        <View style={styles.confirmOverlay}>
+          <View style={styles.confirmContent}>
+            <View style={styles.confirmIconContainer}>
+              <Ionicons name="warning" size={48} color="#d32f2f" />
+            </View>
+            <Text style={styles.confirmTitle}>Confirmer la suppression</Text>
+            <Text style={styles.confirmMessage}>
+              Voulez-vous vraiment supprimer "{selectedItem?.title}" de votre bibliothèque ?
+            </Text>
+            <View style={styles.confirmButtons}>
+              <TouchableOpacity
+                style={[styles.confirmButton, styles.cancelButton]}
+                onPress={() => setConfirmDeleteVisible(false)}
+                disabled={deleting}
+              >
+                <Text style={styles.cancelButtonText}>Annuler</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.confirmButton, styles.confirmDeleteButton]}
+                onPress={deleteItem}
+                disabled={deleting}
+              >
+                {deleting ? (
+                  <ActivityIndicator size="small" color="#fff" />
+                ) : (
+                  <Text style={styles.confirmDeleteButtonText}>Supprimer</Text>
+                )}
+              </TouchableOpacity>
+            </View>
           </View>
         </View>
       </Modal>
@@ -688,11 +788,26 @@ const styles = StyleSheet.create({
     alignSelf: 'flex-start',
     marginBottom: 12,
   },
+  titleContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 4,
+  },
   modalTitle: {
     fontSize: 22,
     fontWeight: 'bold',
     color: '#fff',
-    marginBottom: 4,
+    flex: 1,
+  },
+  translatingIndicator: {
+    marginLeft: 8,
+  },
+  originalTitle: {
+    fontSize: 13,
+    color: '#666',
+    fontStyle: 'italic',
+    marginBottom: 12,
   },
   modalSubtitle: {
     fontSize: 16,
@@ -728,11 +843,23 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '600',
   },
+  synopsisContainer: {
+    marginBottom: 20,
+  },
+  translatingContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingVertical: 12,
+  },
+  translatingText: {
+    color: '#888',
+    fontSize: 14,
+  },
   modalSynopsis: {
     color: '#aaa',
     fontSize: 14,
     lineHeight: 22,
-    marginBottom: 20,
   },
   actionButtons: {
     gap: 12,
@@ -756,6 +883,73 @@ const styles = StyleSheet.create({
     backgroundColor: '#d32f2f',
   },
   actionButtonText: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  // Confirm Delete Modal Styles
+  confirmOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.8)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 20,
+  },
+  confirmContent: {
+    backgroundColor: '#1a1a1a',
+    borderRadius: 20,
+    padding: 24,
+    width: '100%',
+    maxWidth: 340,
+    alignItems: 'center',
+  },
+  confirmIconContainer: {
+    width: 80,
+    height: 80,
+    borderRadius: 40,
+    backgroundColor: 'rgba(211, 47, 47, 0.15)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 16,
+  },
+  confirmTitle: {
+    fontSize: 20,
+    fontWeight: 'bold',
+    color: '#fff',
+    marginBottom: 12,
+    textAlign: 'center',
+  },
+  confirmMessage: {
+    fontSize: 15,
+    color: '#aaa',
+    textAlign: 'center',
+    marginBottom: 24,
+    lineHeight: 22,
+  },
+  confirmButtons: {
+    flexDirection: 'row',
+    gap: 12,
+    width: '100%',
+  },
+  confirmButton: {
+    flex: 1,
+    paddingVertical: 14,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  cancelButton: {
+    backgroundColor: '#333',
+  },
+  cancelButtonText: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  confirmDeleteButton: {
+    backgroundColor: '#d32f2f',
+  },
+  confirmDeleteButtonText: {
     color: '#fff',
     fontSize: 16,
     fontWeight: '600',

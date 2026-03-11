@@ -40,6 +40,11 @@ interface MediaItem {
   published: string | null;
 }
 
+interface Translation {
+  title_fr: string;
+  synopsis_fr: string | null;
+}
+
 export default function SearchScreen() {
   const [searchQuery, setSearchQuery] = useState('');
   const [mediaType, setMediaType] = useState<MediaType>('anime');
@@ -50,6 +55,8 @@ export default function SearchScreen() {
   const [modalVisible, setModalVisible] = useState(false);
   const [addingToLibrary, setAddingToLibrary] = useState(false);
   const [libraryStatus, setLibraryStatus] = useState<{[key: string]: LibraryStatus | null}>({});
+  const [translation, setTranslation] = useState<Translation | null>(null);
+  const [translating, setTranslating] = useState(false);
 
   const search = useCallback(async () => {
     if (!searchQuery.trim()) return;
@@ -91,6 +98,31 @@ export default function SearchScreen() {
     }
   }, [searchQuery, mediaType]);
 
+  const translateContent = async (item: MediaItem) => {
+    setTranslating(true);
+    try {
+      const response = await axios.post(`${API_BASE}/api/translate`, {
+        title: item.title,
+        synopsis: item.synopsis,
+        mal_id: item.mal_id,
+      });
+      setTranslation(response.data);
+    } catch (error) {
+      console.error('Translation error:', error);
+      setTranslation(null);
+    } finally {
+      setTranslating(false);
+    }
+  };
+
+  const openModal = async (item: MediaItem) => {
+    setSelectedItem(item);
+    setTranslation(null);
+    setModalVisible(true);
+    // Start translation in background
+    translateContent(item);
+  };
+
   const addToLibrary = async (item: MediaItem, status: LibraryStatus) => {
     setAddingToLibrary(true);
     try {
@@ -130,10 +162,7 @@ export default function SearchScreen() {
     return (
       <TouchableOpacity
         style={styles.card}
-        onPress={() => {
-          setSelectedItem(item);
-          setModalVisible(true);
-        }}
+        onPress={() => openModal(item)}
         activeOpacity={0.7}
       >
         <Image
@@ -182,6 +211,18 @@ export default function SearchScreen() {
         </View>
       </TouchableOpacity>
     );
+  };
+
+  // Get display title and synopsis (prefer French translation)
+  const getDisplayTitle = () => {
+    if (translation?.title_fr) return translation.title_fr;
+    if (selectedItem?.title_english) return selectedItem.title_english;
+    return selectedItem?.title || '';
+  };
+
+  const getDisplaySynopsis = () => {
+    if (translation?.synopsis_fr) return translation.synopsis_fr;
+    return selectedItem?.synopsis || '';
   };
 
   return (
@@ -302,9 +343,20 @@ export default function SearchScreen() {
                     style={styles.modalImage}
                     resizeMode="cover"
                   />
-                  <Text style={styles.modalTitle}>{selectedItem.title}</Text>
-                  {selectedItem.title_english && selectedItem.title_english !== selectedItem.title && (
-                    <Text style={styles.modalSubtitle}>{selectedItem.title_english}</Text>
+                  
+                  {/* Translated Title */}
+                  <View style={styles.titleContainer}>
+                    <Text style={styles.modalTitle}>{getDisplayTitle()}</Text>
+                    {translating && (
+                      <ActivityIndicator size="small" color="#e63946" style={styles.translatingIndicator} />
+                    )}
+                  </View>
+                  
+                  {/* Original title if different */}
+                  {translation?.title_fr && translation.title_fr !== selectedItem.title && (
+                    <Text style={styles.originalTitle}>
+                      Titre original: {selectedItem.title}
+                    </Text>
                   )}
                   
                   <View style={styles.modalMeta}>
@@ -328,8 +380,18 @@ export default function SearchScreen() {
                     )}
                   </View>
                   
-                  {selectedItem.synopsis && (
-                    <Text style={styles.modalSynopsis}>{selectedItem.synopsis}</Text>
+                  {/* Translated Synopsis */}
+                  {(getDisplaySynopsis() || translating) && (
+                    <View style={styles.synopsisContainer}>
+                      {translating && !translation ? (
+                        <View style={styles.translatingContainer}>
+                          <ActivityIndicator size="small" color="#e63946" />
+                          <Text style={styles.translatingText}>Traduction en cours...</Text>
+                        </View>
+                      ) : (
+                        <Text style={styles.modalSynopsis}>{getDisplaySynopsis()}</Text>
+                      )}
+                    </View>
                   )}
                   
                   {/* Add to Library Buttons */}
@@ -574,11 +636,26 @@ const styles = StyleSheet.create({
     borderRadius: 16,
     marginBottom: 16,
   },
+  titleContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 4,
+  },
   modalTitle: {
     fontSize: 22,
     fontWeight: 'bold',
     color: '#fff',
-    marginBottom: 4,
+    flex: 1,
+  },
+  translatingIndicator: {
+    marginLeft: 8,
+  },
+  originalTitle: {
+    fontSize: 13,
+    color: '#666',
+    fontStyle: 'italic',
+    marginBottom: 12,
   },
   modalSubtitle: {
     fontSize: 16,
@@ -599,11 +676,23 @@ const styles = StyleSheet.create({
     color: '#ccc',
     fontSize: 14,
   },
+  synopsisContainer: {
+    marginBottom: 20,
+  },
+  translatingContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingVertical: 12,
+  },
+  translatingText: {
+    color: '#888',
+    fontSize: 14,
+  },
   modalSynopsis: {
     color: '#aaa',
     fontSize: 14,
     lineHeight: 22,
-    marginBottom: 20,
   },
   actionButtons: {
     gap: 12,

@@ -11,6 +11,7 @@ import uuid
 from datetime import datetime
 import httpx
 from enum import Enum
+from emergentintegrations.llm.chat import LlmChat, UserMessage
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -20,6 +21,9 @@ mongo_url = os.environ['MONGO_URL']
 client = AsyncIOMotorClient(mongo_url)
 db = client[os.environ['DB_NAME']]
 
+# LLM Key for translation
+EMERGENT_LLM_KEY = os.environ.get('EMERGENT_LLM_KEY', '')
+
 # Create the main app without a prefix
 app = FastAPI()
 
@@ -28,6 +32,9 @@ api_router = APIRouter(prefix="/api")
 
 # Jikan API base URL
 JIKAN_API_BASE = "https://api.jikan.moe/v4"
+
+# Translation cache to avoid re-translating
+translation_cache = {}
 
 # Enums
 class MediaType(str, Enum):
@@ -190,6 +197,95 @@ async def check_in_library(mal_id: int, media_type: MediaType):
     if item:
         return {"in_library": True, "item": LibraryItem(**item)}
     return {"in_library": False, "item": None}
+
+# Translation Models
+class TranslationRequest(BaseModel):
+    title: str
+    synopsis: Optional[str] = None
+    mal_id: int
+
+class TranslationResponse(BaseModel):
+    title_fr: str
+    synopsis_fr: Optional[str] = None
+
+@api_router.post("/translate", response_model=TranslationResponse)
+async def translate_content(request: TranslationRequest):
+    """Translate anime/manga title and synopsis to French"""
+    cache_key = f"{request.mal_id}"
+    
+    # Check cache first
+    if cache_key in translation_cache:
+        return translation_cache[cache_key]
+    
+    # Check database cache
+    cached = await db.translations.find_one({"mal_id": request.mal_id})
+    if cached:
+        result = TranslationResponse(
+            title_fr=cached.get("title_fr", request.title),
+            synopsis_fr=cached.get("synopsis_fr")
+        )
+        translation_cache[cache_key] = result
+        return result
+    
+    if not EMERGENT_LLM_KEY:
+        return TranslationResponse(title_fr=request.title, synopsis_fr=request.synopsis)
+    
+    try:
+        chat = LlmChat(
+            api_key=EMERGENT_LLM_KEY,
+            session_id=f"translate-{request.mal_id}",
+            system_message="""Tu es un traducteur spécialisé dans les anime et manga. 
+Traduis le titre et le résumé en français de manière naturelle et fluide.
+Pour les titres qui sont déjà connus en français (comme "L'Attaque des Titans"), utilise le titre français officiel.
+Pour les titres qui n'ont pas de traduction officielle (comme "Rascal Does Not Dream of Bunny Girl Senpai"), garde le titre anglais original.
+Réponds UNIQUEMENT au format JSON sans markdown: {"title_fr": "...", "synopsis_fr": "..."}"""
+        ).with_model("openai", "gpt-4o-mini")
+        
+        content = f"Titre: {request.title}"
+        if request.synopsis:
+            # Limit synopsis to first 500 chars for efficiency
+            synopsis_short = request.synopsis[:1000] if len(request.synopsis) > 1000 else request.synopsis
+            content += f"\n\nRésumé: {synopsis_short}"
+        
+        user_message = UserMessage(text=content)
+        response = await chat.send_message(user_message)
+        
+        # Parse JSON response
+        import json
+        # Clean response if it has markdown
+        response_clean = response.strip()
+        if response_clean.startswith("```"):
+            response_clean = response_clean.split("```")[1]
+            if response_clean.startswith("json"):
+                response_clean = response_clean[4:]
+        response_clean = response_clean.strip()
+        
+        translated = json.loads(response_clean)
+        result = TranslationResponse(
+            title_fr=translated.get("title_fr", request.title),
+            synopsis_fr=translated.get("synopsis_fr", request.synopsis)
+        )
+        
+        # Save to database cache
+        await db.translations.update_one(
+            {"mal_id": request.mal_id},
+            {"$set": {
+                "mal_id": request.mal_id,
+                "title_fr": result.title_fr,
+                "synopsis_fr": result.synopsis_fr,
+                "original_title": request.title
+            }},
+            upsert=True
+        )
+        
+        # Save to memory cache
+        translation_cache[cache_key] = result
+        
+        return result
+        
+    except Exception as e:
+        logger.error(f"Translation error: {str(e)}")
+        return TranslationResponse(title_fr=request.title, synopsis_fr=request.synopsis)
 
 # Status endpoints
 @api_router.post("/status", response_model=StatusCheck)
