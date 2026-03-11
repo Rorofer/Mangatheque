@@ -59,6 +59,33 @@ export default function LibraryScreen() {
   const [deleting, setDeleting] = useState(false);
   const [translation, setTranslation] = useState<Translation | null>(null);
   const [translating, setTranslating] = useState(false);
+  const [titleTranslations, setTitleTranslations] = useState<{[key: string]: string}>({});
+  const [translatingTitles, setTranslatingTitles] = useState(false);
+
+  const translateLibraryTitles = useCallback(async (libraryItems: LibraryItem[]) => {
+    if (libraryItems.length === 0) return;
+    
+    setTranslatingTitles(true);
+    try {
+      const batchResponse = await axios.post(`${API_BASE}/api/translate/batch`, {
+        items: libraryItems.map((item) => ({
+          mal_id: item.mal_id,
+          title: item.title,
+          synopsis: null
+        }))
+      });
+      
+      const translationsMap: {[key: string]: string} = {};
+      for (const [malId, trans] of Object.entries(batchResponse.data.translations)) {
+        translationsMap[malId] = (trans as Translation).title_fr;
+      }
+      setTitleTranslations(translationsMap);
+    } catch (error) {
+      console.error('Batch translation error:', error);
+    } finally {
+      setTranslatingTitles(false);
+    }
+  }, []);
 
   const fetchLibrary = useCallback(async () => {
     try {
@@ -67,14 +94,20 @@ export default function LibraryScreen() {
       if (mediaFilter !== 'all') params.media_type = mediaFilter;
       
       const response = await axios.get(`${API_BASE}/api/library`, { params });
-      setItems(response.data);
+      const libraryItems = response.data;
+      setItems(libraryItems);
+      
+      // Translate titles
+      if (libraryItems.length > 0) {
+        translateLibraryTitles(libraryItems);
+      }
     } catch (error) {
       console.error('Fetch library error:', error);
     } finally {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [statusFilter, mediaFilter]);
+  }, [statusFilter, mediaFilter, translateLibraryTitles]);
 
   useFocusEffect(
     useCallback(() => {
@@ -88,6 +121,7 @@ export default function LibraryScreen() {
 
   const onRefresh = useCallback(() => {
     setRefreshing(true);
+    setTitleTranslations({});
     fetchLibrary();
   }, [fetchLibrary]);
 
@@ -110,7 +144,13 @@ export default function LibraryScreen() {
 
   const openModal = async (item: LibraryItem) => {
     setSelectedItem(item);
-    setTranslation(null);
+    // Use cached title translation if available
+    const cachedTitle = titleTranslations[String(item.mal_id)];
+    if (cachedTitle) {
+      setTranslation({ title_fr: cachedTitle, synopsis_fr: null });
+    } else {
+      setTranslation(null);
+    }
     setModalVisible(true);
     translateContent(item);
   };
@@ -127,7 +167,6 @@ export default function LibraryScreen() {
       setSelectedItem(prev => prev ? { ...prev, status: newStatus } : null);
     } catch (error) {
       console.error('Update error:', error);
-      // Show error in a cross-platform way
       if (Platform.OS === 'web') {
         window.alert('Impossible de mettre à jour le statut');
       }
@@ -155,7 +194,14 @@ export default function LibraryScreen() {
     }
   };
 
-  // Get display title and synopsis (prefer French translation)
+  const getCardTitle = (item: LibraryItem) => {
+    const translatedTitle = titleTranslations[String(item.mal_id)];
+    if (translatedTitle) return translatedTitle;
+    if (item.title_english) return item.title_english;
+    return item.title;
+  };
+
+  // Get display title and synopsis for modal (prefer French translation)
   const getDisplayTitle = () => {
     if (translation?.title_fr) return translation.title_fr;
     if (selectedItem?.title_english) return selectedItem.title_english;
@@ -167,66 +213,77 @@ export default function LibraryScreen() {
     return selectedItem?.synopsis || '';
   };
 
-  const renderItem = ({ item }: { item: LibraryItem }) => (
-    <TouchableOpacity
-      style={styles.card}
-      onPress={() => openModal(item)}
-      activeOpacity={0.7}
-    >
-      <Image
-        source={{ uri: item.image_url || 'https://via.placeholder.com/100x150' }}
-        style={styles.cardImage}
-        resizeMode="cover"
-      />
-      <View style={styles.cardContent}>
-        <View style={styles.cardHeader}>
+  const renderItem = ({ item }: { item: LibraryItem }) => {
+    const displayTitle = getCardTitle(item);
+    const showOriginalTitle = titleTranslations[String(item.mal_id)] && 
+                              titleTranslations[String(item.mal_id)] !== item.title;
+    
+    return (
+      <TouchableOpacity
+        style={styles.card}
+        onPress={() => openModal(item)}
+        activeOpacity={0.7}
+      >
+        <Image
+          source={{ uri: item.image_url || 'https://via.placeholder.com/100x150' }}
+          style={styles.cardImage}
+          resizeMode="cover"
+        />
+        <View style={styles.cardContent}>
+          <View style={styles.cardHeader}>
+            <View style={[
+              styles.typeBadge,
+              item.media_type === 'anime' ? styles.animeBadge : styles.mangaBadge
+            ]}>
+              <Text style={styles.typeBadgeText}>
+                {item.media_type === 'anime' ? 'Anime' : 'Manga'}
+              </Text>
+            </View>
+          </View>
+          <Text style={styles.cardTitle} numberOfLines={2}>
+            {displayTitle}
+          </Text>
+          {showOriginalTitle && (
+            <Text style={styles.cardSubtitle} numberOfLines={1}>
+              {item.title}
+            </Text>
+          )}
+          {!showOriginalTitle && item.title_english && item.title_english !== item.title && (
+            <Text style={styles.cardSubtitle} numberOfLines={1}>
+              {item.title_english}
+            </Text>
+          )}
+          <View style={styles.cardMeta}>
+            {item.score && (
+              <View style={styles.scoreBadge}>
+                <Ionicons name="star" size={12} color="#ffd700" />
+                <Text style={styles.scoreText}>{item.score.toFixed(1)}</Text>
+              </View>
+            )}
+            {item.episodes && (
+              <Text style={styles.metaText}>{item.episodes} épisodes</Text>
+            )}
+            {item.chapters && (
+              <Text style={styles.metaText}>{item.chapters} chapitres</Text>
+            )}
+          </View>
           <View style={[
-            styles.typeBadge,
-            item.media_type === 'anime' ? styles.animeBadge : styles.mangaBadge
+            styles.statusBadge,
+            item.status === 'watched' ? styles.watchedBadge : styles.watchlistBadge
           ]}>
-            <Text style={styles.typeBadgeText}>
-              {item.media_type === 'anime' ? 'Anime' : 'Manga'}
+            <Ionicons 
+              name={item.status === 'watched' ? 'checkmark-circle' : 'time'} 
+              size={12} 
+              color="#fff" 
+            />
+            <Text style={styles.statusText}>
+              {item.status === 'watched' ? 'Vu' : 'À voir'}
             </Text>
           </View>
         </View>
-        <Text style={styles.cardTitle} numberOfLines={2}>
-          {item.title}
-        </Text>
-        {item.title_english && item.title_english !== item.title && (
-          <Text style={styles.cardSubtitle} numberOfLines={1}>
-            {item.title_english}
-          </Text>
-        )}
-        <View style={styles.cardMeta}>
-          {item.score && (
-            <View style={styles.scoreBadge}>
-              <Ionicons name="star" size={12} color="#ffd700" />
-              <Text style={styles.scoreText}>{item.score.toFixed(1)}</Text>
-            </View>
-          )}
-          {item.episodes && (
-            <Text style={styles.metaText}>{item.episodes} épisodes</Text>
-          )}
-          {item.chapters && (
-            <Text style={styles.metaText}>{item.chapters} chapitres</Text>
-          )}
-        </View>
-        <View style={[
-          styles.statusBadge,
-          item.status === 'watched' ? styles.watchedBadge : styles.watchlistBadge
-        ]}>
-          <Ionicons 
-            name={item.status === 'watched' ? 'checkmark-circle' : 'time'} 
-            size={12} 
-            color="#fff" 
-          />
-          <Text style={styles.statusText}>
-            {item.status === 'watched' ? 'Vu' : 'À voir'}
-          </Text>
-        </View>
-      </View>
-    </TouchableOpacity>
-  );
+      </TouchableOpacity>
+    );
+  };
 
   const filteredCount = items.length;
   const watchedCount = items.filter(i => i.status === 'watched').length;
@@ -364,21 +421,30 @@ export default function LibraryScreen() {
             </Text>
           </View>
         ) : (
-          <FlashList
-            data={items}
-            renderItem={renderItem}
-            estimatedItemSize={150}
-            keyExtractor={(item) => item.id}
-            contentContainerStyle={styles.listContent}
-            showsVerticalScrollIndicator={false}
-            refreshControl={
-              <RefreshControl
-                refreshing={refreshing}
-                onRefresh={onRefresh}
-                tintColor="#e63946"
-              />
-            }
-          />
+          <>
+            {translatingTitles && (
+              <View style={styles.translatingBanner}>
+                <ActivityIndicator size="small" color="#e63946" />
+                <Text style={styles.translatingBannerText}>Traduction des titres...</Text>
+              </View>
+            )}
+            <FlashList
+              data={items}
+              renderItem={renderItem}
+              estimatedItemSize={150}
+              keyExtractor={(item) => item.id}
+              contentContainerStyle={styles.listContent}
+              showsVerticalScrollIndicator={false}
+              extraData={titleTranslations}
+              refreshControl={
+                <RefreshControl
+                  refreshing={refreshing}
+                  onRefresh={onRefresh}
+                  tintColor="#e63946"
+                />
+              }
+            />
+          </>
         )}
       </View>
 
@@ -467,7 +533,7 @@ export default function LibraryScreen() {
                 {/* Translated Synopsis */}
                 {(getDisplaySynopsis() || translating) && (
                   <View style={styles.synopsisContainer}>
-                    {translating && !translation ? (
+                    {translating && !translation?.synopsis_fr ? (
                       <View style={styles.translatingContainer}>
                         <ActivityIndicator size="small" color="#e63946" />
                         <Text style={styles.translatingText}>Traduction en cours...</Text>
@@ -540,7 +606,7 @@ export default function LibraryScreen() {
             </View>
             <Text style={styles.confirmTitle}>Confirmer la suppression</Text>
             <Text style={styles.confirmMessage}>
-              Voulez-vous vraiment supprimer "{selectedItem?.title}" de votre bibliothèque ?
+              Voulez-vous vraiment supprimer "{getDisplayTitle()}" de votre bibliothèque ?
             </Text>
             <View style={styles.confirmButtons}>
               <TouchableOpacity
@@ -662,6 +728,21 @@ const styles = StyleSheet.create({
     fontSize: 14,
     textAlign: 'center',
   },
+  translatingBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    paddingVertical: 8,
+    backgroundColor: '#1a1a1a',
+    marginHorizontal: 20,
+    borderRadius: 8,
+    marginBottom: 8,
+  },
+  translatingBannerText: {
+    color: '#888',
+    fontSize: 13,
+  },
   listContent: {
     paddingHorizontal: 20,
     paddingBottom: 20,
@@ -712,6 +793,7 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: '#888',
     marginBottom: 8,
+    fontStyle: 'italic',
   },
   cardMeta: {
     flexDirection: 'row',
