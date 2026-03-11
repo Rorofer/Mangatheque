@@ -610,7 +610,7 @@ export default function SearchScreen() {
   );
 
   return (
-    <SafeAreaView style={styles.container} edges={['top']}>
+    <View style={styles.container}>
       <KeyboardAvoidingView
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
         style={styles.flex}
@@ -975,14 +975,14 @@ export default function SearchScreen() {
           </View>
         </Modal>
       </KeyboardAvoidingView>
-    </SafeAreaView>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#0f0f0f',
+    backgroundColor: 'transparent',
   },
   flex: {
     flex: 1,

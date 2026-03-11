@@ -325,7 +325,7 @@ export default function LibraryScreen() {
   const watchlistCount = items.filter(i => i.status === 'watchlist').length;
 
   return (
-    <SafeAreaView style={styles.container} edges={['top']}>
+    <View style={styles.container}>
       <View style={styles.header}>
         <Text style={styles.headerTitle}>Ma Bibliothèque</Text>
         <Text style={styles.headerSubtitle}>
@@ -723,14 +723,14 @@ export default function LibraryScreen() {
           </View>
         </View>
       </Modal>
-    </SafeAreaView>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#0f0f0f',
+    backgroundColor: 'transparent',
   },
   header: {
     paddingHorizontal: 20,
