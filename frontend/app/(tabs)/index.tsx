@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect, useRef } from 'react';
 import {
   View,
   Text,
@@ -24,6 +24,7 @@ const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
 type MediaType = 'anime' | 'manga';
 type LibraryStatus = 'watched' | 'watchlist';
+type SortOption = 'relevance' | 'score' | 'title' | 'date' | 'popularity';
 
 interface MediaItem {
   mal_id: number;
@@ -39,6 +40,8 @@ interface MediaItem {
   aired: string | null;
   published: string | null;
   relation_type?: string;
+  year?: number;
+  members?: number;
 }
 
 interface Translation {
@@ -56,8 +59,17 @@ const RELATION_TYPES_FR: {[key: string]: string} = {
   'Spin-off': 'Spin-off',
   'Alternative version': 'Version alternative',
   'Alternative setting': 'Univers alternatif',
+  'Character': 'Personnage',
   'Other': 'Autre',
 };
+
+const SORT_OPTIONS: { key: SortOption; label: string; icon: string }[] = [
+  { key: 'relevance', label: 'Pertinence', icon: 'sparkles' },
+  { key: 'score', label: 'Note', icon: 'star' },
+  { key: 'title', label: 'Titre A-Z', icon: 'text' },
+  { key: 'date', label: 'Date', icon: 'calendar' },
+  { key: 'popularity', label: 'Popularité', icon: 'trending-up' },
+];
 
 export default function SearchScreen() {
   const [searchQuery, setSearchQuery] = useState('');
@@ -77,21 +89,103 @@ export default function SearchScreen() {
   const [loadingRelations, setLoadingRelations] = useState(false);
   const [relatedTranslations, setRelatedTranslations] = useState<{[key: string]: string}>({});
   const [addingRelatedId, setAddingRelatedId] = useState<number | null>(null);
+  
+  // Sort and preview states
+  const [sortBy, setSortBy] = useState<SortOption>('relevance');
+  const [showSortModal, setShowSortModal] = useState(false);
+  const [previewResults, setPreviewResults] = useState<MediaItem[]>([]);
+  const [showPreview, setShowPreview] = useState(false);
+  const [loadingPreview, setLoadingPreview] = useState(false);
+  const searchTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const [inputFocused, setInputFocused] = useState(false);
 
-  const search = useCallback(async () => {
-    if (!searchQuery.trim()) return;
+  // Debounced preview search
+  useEffect(() => {
+    if (searchQuery.trim().length >= 2 && inputFocused) {
+      if (searchTimeoutRef.current) {
+        clearTimeout(searchTimeoutRef.current);
+      }
+      
+      searchTimeoutRef.current = setTimeout(async () => {
+        setLoadingPreview(true);
+        try {
+          const response = await axios.get(
+            `${API_BASE}/api/search/${mediaType}`,
+            { params: { q: searchQuery, limit: 5 }, timeout: 10000 }
+          );
+          setPreviewResults(response.data.data);
+          setShowPreview(true);
+        } catch (error) {
+          console.error('Preview error:', error);
+          setPreviewResults([]);
+        } finally {
+          setLoadingPreview(false);
+        }
+      }, 300);
+    } else {
+      setPreviewResults([]);
+      setShowPreview(false);
+    }
+    
+    return () => {
+      if (searchTimeoutRef.current) {
+        clearTimeout(searchTimeoutRef.current);
+      }
+    };
+  }, [searchQuery, mediaType, inputFocused]);
+
+  const sortResults = useCallback((items: MediaItem[], sort: SortOption): MediaItem[] => {
+    const sorted = [...items];
+    switch (sort) {
+      case 'score':
+        return sorted.sort((a, b) => (b.score || 0) - (a.score || 0));
+      case 'title':
+        return sorted.sort((a, b) => {
+          const titleA = titleTranslations[String(a.mal_id)] || a.title_english || a.title;
+          const titleB = titleTranslations[String(b.mal_id)] || b.title_english || b.title;
+          return titleA.localeCompare(titleB, 'fr');
+        });
+      case 'date':
+        return sorted.sort((a, b) => {
+          const yearA = a.year || extractYear(a.aired || a.published || '') || 0;
+          const yearB = b.year || extractYear(b.aired || b.published || '') || 0;
+          return yearB - yearA;
+        });
+      case 'popularity':
+        return sorted.sort((a, b) => (b.members || 0) - (a.members || 0));
+      default:
+        return sorted;
+    }
+  }, [titleTranslations]);
+
+  const extractYear = (dateStr: string): number => {
+    const match = dateStr.match(/(\d{4})/);
+    return match ? parseInt(match[1]) : 0;
+  };
+
+  const search = useCallback(async (query?: string) => {
+    const searchTerm = query || searchQuery;
+    if (!searchTerm.trim()) return;
     
     Keyboard.dismiss();
     setLoading(true);
     setSearched(true);
     setTitleTranslations({});
+    setShowPreview(false);
     
     try {
       const response = await axios.get(
         `${API_BASE}/api/search/${mediaType}`,
-        { params: { q: searchQuery, limit: 20 }, timeout: 30000 }
+        { params: { q: searchTerm, limit: 25 }, timeout: 30000 }
       );
-      const searchResults = response.data.data;
+      let searchResults = response.data.data;
+      
+      // Enhance results with year info
+      searchResults = searchResults.map((item: MediaItem) => ({
+        ...item,
+        year: extractYear(item.aired || item.published || ''),
+      }));
+      
       setResults(searchResults);
       
       // Fetch library items and build status map
@@ -141,6 +235,12 @@ export default function SearchScreen() {
       setLoading(false);
     }
   }, [searchQuery, mediaType]);
+
+  const selectPreviewItem = (item: MediaItem) => {
+    setSearchQuery(item.title);
+    setShowPreview(false);
+    openModal(item);
+  };
 
   const translateContent = async (item: MediaItem) => {
     setTranslating(true);
@@ -216,7 +316,7 @@ export default function SearchScreen() {
     setSelectedItem(item);
     setRelatedItems([]);
     setRelatedTranslations({});
-    // Use cached title translation if available
+    setShowPreview(false);
     const cachedTitle = titleTranslations[String(item.mal_id)];
     if (cachedTitle) {
       setTranslation({ title_fr: cachedTitle, synopsis_fr: null });
@@ -224,9 +324,7 @@ export default function SearchScreen() {
       setTranslation(null);
     }
     setModalVisible(true);
-    // Fetch full translation including synopsis
     translateContent(item);
-    // Fetch related anime/manga
     fetchRelations(item);
   };
 
@@ -257,7 +355,6 @@ export default function SearchScreen() {
       }));
       
       if (!isRelated) {
-        // Don't close modal if adding related item
         setModalVisible(false);
       }
     } catch (error: any) {
@@ -284,8 +381,6 @@ export default function SearchScreen() {
     if (!selectedItem) return;
     
     setAddingToLibrary(true);
-    
-    // Add main item first
     const itemsToAdd = [selectedItem, ...relatedItems];
     
     for (const item of itemsToAdd) {
@@ -333,11 +428,15 @@ export default function SearchScreen() {
     return item.title;
   };
 
+  // Get sorted results
+  const sortedResults = sortResults(results, sortBy);
+
   const renderItem = ({ item }: { item: MediaItem }) => {
     const itemStatus = libraryStatus[`${item.mal_id}-${item.media_type}`];
     const displayTitle = getCardTitle(item);
     const showOriginalTitle = titleTranslations[String(item.mal_id)] && 
                               titleTranslations[String(item.mal_id)] !== item.title;
+    const year = item.year || extractYear(item.aired || item.published || '');
     
     return (
       <TouchableOpacity
@@ -359,11 +458,6 @@ export default function SearchScreen() {
               {item.title}
             </Text>
           )}
-          {!showOriginalTitle && item.title_english && item.title_english !== item.title && (
-            <Text style={styles.cardSubtitle} numberOfLines={1}>
-              {item.title_english}
-            </Text>
-          )}
           <View style={styles.cardMeta}>
             {item.score && (
               <View style={styles.scoreBadge}>
@@ -371,11 +465,14 @@ export default function SearchScreen() {
                 <Text style={styles.scoreText}>{item.score.toFixed(1)}</Text>
               </View>
             )}
+            {year > 0 && (
+              <Text style={styles.metaText}>{year}</Text>
+            )}
             {item.episodes && (
-              <Text style={styles.metaText}>{item.episodes} épisodes</Text>
+              <Text style={styles.metaText}>{item.episodes} ép.</Text>
             )}
             {item.chapters && (
-              <Text style={styles.metaText}>{item.chapters} chapitres</Text>
+              <Text style={styles.metaText}>{item.chapters} ch.</Text>
             )}
           </View>
           {itemStatus && (
@@ -398,7 +495,6 @@ export default function SearchScreen() {
     );
   };
 
-  // Get display title and synopsis for modal (prefer French translation)
   const getDisplayTitle = () => {
     if (translation?.title_fr) return translation.title_fr;
     if (selectedItem?.title_english) return selectedItem.title_english;
@@ -482,6 +578,37 @@ export default function SearchScreen() {
     );
   };
 
+  const renderPreviewItem = (item: MediaItem) => (
+    <TouchableOpacity
+      key={item.mal_id}
+      style={styles.previewItem}
+      onPress={() => selectPreviewItem(item)}
+    >
+      <Image
+        source={{ uri: item.image_url || 'https://via.placeholder.com/40x60' }}
+        style={styles.previewImage}
+        resizeMode="cover"
+      />
+      <View style={styles.previewContent}>
+        <Text style={styles.previewTitle} numberOfLines={1}>
+          {item.title_english || item.title}
+        </Text>
+        <View style={styles.previewMeta}>
+          {item.score && (
+            <View style={styles.previewScoreBadge}>
+              <Ionicons name="star" size={10} color="#ffd700" />
+              <Text style={styles.previewScoreText}>{item.score.toFixed(1)}</Text>
+            </View>
+          )}
+          {item.episodes && (
+            <Text style={styles.previewMetaText}>{item.episodes} ép.</Text>
+          )}
+        </View>
+      </View>
+      <Ionicons name="chevron-forward" size={16} color="#666" />
+    </TouchableOpacity>
+  );
+
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
       <KeyboardAvoidingView
@@ -524,29 +651,80 @@ export default function SearchScreen() {
           </TouchableOpacity>
         </View>
 
-        {/* Search Bar */}
+        {/* Search Bar with Preview */}
         <View style={styles.searchContainer}>
-          <View style={styles.searchInputContainer}>
-            <Ionicons name="search" size={20} color="#888" style={styles.searchIcon} />
-            <TextInput
-              style={styles.searchInput}
-              placeholder={`Rechercher un ${mediaType}...`}
-              placeholderTextColor="#666"
-              value={searchQuery}
-              onChangeText={setSearchQuery}
-              onSubmitEditing={search}
-              returnKeyType="search"
-            />
-            {searchQuery.length > 0 && (
-              <TouchableOpacity onPress={() => setSearchQuery('')}>
-                <Ionicons name="close-circle" size={20} color="#666" />
-              </TouchableOpacity>
-            )}
+          <View style={styles.searchRow}>
+            <View style={[styles.searchInputContainer, showPreview && styles.searchInputContainerActive]}>
+              <Ionicons name="search" size={20} color="#888" style={styles.searchIcon} />
+              <TextInput
+                style={styles.searchInput}
+                placeholder={`Rechercher un ${mediaType}...`}
+                placeholderTextColor="#666"
+                value={searchQuery}
+                onChangeText={setSearchQuery}
+                onSubmitEditing={() => search()}
+                onFocus={() => setInputFocused(true)}
+                onBlur={() => {
+                  setTimeout(() => {
+                    setInputFocused(false);
+                    setShowPreview(false);
+                  }, 200);
+                }}
+                returnKeyType="search"
+              />
+              {loadingPreview && (
+                <ActivityIndicator size="small" color="#e63946" style={{ marginRight: 8 }} />
+              )}
+              {searchQuery.length > 0 && !loadingPreview && (
+                <TouchableOpacity onPress={() => {
+                  setSearchQuery('');
+                  setShowPreview(false);
+                }}>
+                  <Ionicons name="close-circle" size={20} color="#666" />
+                </TouchableOpacity>
+              )}
+            </View>
           </View>
-          <TouchableOpacity style={styles.searchButton} onPress={search}>
+
+          {/* Preview Dropdown */}
+          {showPreview && previewResults.length > 0 && (
+            <View style={styles.previewContainer}>
+              {previewResults.map(renderPreviewItem)}
+              <TouchableOpacity
+                style={styles.previewSearchAll}
+                onPress={() => search()}
+              >
+                <Ionicons name="search" size={16} color="#e63946" />
+                <Text style={styles.previewSearchAllText}>
+                  Voir tous les résultats pour "{searchQuery}"
+                </Text>
+              </TouchableOpacity>
+            </View>
+          )}
+
+          <TouchableOpacity style={styles.searchButton} onPress={() => search()}>
             <Text style={styles.searchButtonText}>Rechercher</Text>
           </TouchableOpacity>
         </View>
+
+        {/* Sort Options (only shown after search) */}
+        {searched && results.length > 0 && (
+          <View style={styles.sortContainer}>
+            <Text style={styles.resultsCount}>
+              {results.length} résultat{results.length > 1 ? 's' : ''}
+            </Text>
+            <TouchableOpacity
+              style={styles.sortButton}
+              onPress={() => setShowSortModal(true)}
+            >
+              <Ionicons name={SORT_OPTIONS.find(o => o.key === sortBy)?.icon as any || 'swap-vertical'} size={16} color="#e63946" />
+              <Text style={styles.sortButtonText}>
+                {SORT_OPTIONS.find(o => o.key === sortBy)?.label}
+              </Text>
+              <Ionicons name="chevron-down" size={14} color="#888" />
+            </TouchableOpacity>
+          </View>
+        )}
 
         {/* Results */}
         <View style={styles.resultsContainer}>
@@ -574,17 +752,63 @@ export default function SearchScreen() {
                 </View>
               )}
               <FlashList
-                data={results}
+                data={sortedResults}
                 renderItem={renderItem}
                 estimatedItemSize={130}
                 keyExtractor={(item) => `${item.mal_id}-${item.media_type}`}
                 contentContainerStyle={styles.listContent}
                 showsVerticalScrollIndicator={false}
-                extraData={titleTranslations}
+                extraData={{ titleTranslations, sortBy }}
               />
             </>
           )}
         </View>
+
+        {/* Sort Modal */}
+        <Modal
+          visible={showSortModal}
+          animationType="fade"
+          transparent={true}
+          onRequestClose={() => setShowSortModal(false)}
+        >
+          <TouchableOpacity
+            style={styles.sortModalOverlay}
+            activeOpacity={1}
+            onPress={() => setShowSortModal(false)}
+          >
+            <View style={styles.sortModalContent}>
+              <Text style={styles.sortModalTitle}>Trier par</Text>
+              {SORT_OPTIONS.map((option) => (
+                <TouchableOpacity
+                  key={option.key}
+                  style={[
+                    styles.sortModalOption,
+                    sortBy === option.key && styles.sortModalOptionActive,
+                  ]}
+                  onPress={() => {
+                    setSortBy(option.key);
+                    setShowSortModal(false);
+                  }}
+                >
+                  <Ionicons
+                    name={option.icon as any}
+                    size={20}
+                    color={sortBy === option.key ? '#e63946' : '#888'}
+                  />
+                  <Text style={[
+                    styles.sortModalOptionText,
+                    sortBy === option.key && styles.sortModalOptionTextActive,
+                  ]}>
+                    {option.label}
+                  </Text>
+                  {sortBy === option.key && (
+                    <Ionicons name="checkmark" size={20} color="#e63946" />
+                  )}
+                </TouchableOpacity>
+              ))}
+            </View>
+          </TouchableOpacity>
+        </Modal>
 
         {/* Detail Modal */}
         <Modal
@@ -610,7 +834,6 @@ export default function SearchScreen() {
                     resizeMode="cover"
                   />
                   
-                  {/* Translated Title */}
                   <View style={styles.titleContainer}>
                     <Text style={styles.modalTitle}>{getDisplayTitle()}</Text>
                     {translating && (
@@ -618,7 +841,6 @@ export default function SearchScreen() {
                     )}
                   </View>
                   
-                  {/* Original title if different */}
                   {translation?.title_fr && translation.title_fr !== selectedItem.title && (
                     <Text style={styles.originalTitle}>
                       Titre original: {selectedItem.title}
@@ -646,7 +868,6 @@ export default function SearchScreen() {
                     )}
                   </View>
                   
-                  {/* Translated Synopsis */}
                   {(getDisplaySynopsis() || translating) && (
                     <View style={styles.synopsisContainer}>
                       {translating && !translation?.synopsis_fr ? (
@@ -660,7 +881,6 @@ export default function SearchScreen() {
                     </View>
                   )}
                   
-                  {/* Related Items Section */}
                   {(loadingRelations || relatedItems.length > 0) && (
                     <View style={styles.relatedSection}>
                       <View style={styles.relatedHeader}>
@@ -679,7 +899,6 @@ export default function SearchScreen() {
                         <>
                           {relatedItems.map(renderRelatedItem)}
                           
-                          {/* Add all button */}
                           {relatedItems.some(item => !libraryStatus[`${item.mal_id}-${item.media_type}`]) && (
                             <View style={styles.addAllContainer}>
                               <TouchableOpacity
@@ -711,7 +930,6 @@ export default function SearchScreen() {
                     </View>
                   )}
                   
-                  {/* Add to Library Buttons */}
                   {!libraryStatus[`${selectedItem.mal_id}-${selectedItem.media_type}`] ? (
                     <View style={styles.actionButtons}>
                       <TouchableOpacity
@@ -804,15 +1022,28 @@ const styles = StyleSheet.create({
   },
   searchContainer: {
     paddingHorizontal: 20,
-    marginBottom: 16,
+    marginBottom: 8,
+    zIndex: 100,
+  },
+  searchRow: {
+    flexDirection: 'row',
+    gap: 10,
   },
   searchInputContainer: {
+    flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: '#1a1a1a',
     borderRadius: 12,
     paddingHorizontal: 16,
     marginBottom: 12,
+    borderWidth: 2,
+    borderColor: 'transparent',
+  },
+  searchInputContainerActive: {
+    borderColor: '#e63946',
+    borderBottomLeftRadius: 0,
+    borderBottomRightRadius: 0,
   },
   searchIcon: {
     marginRight: 10,
@@ -823,6 +1054,71 @@ const styles = StyleSheet.create({
     fontSize: 16,
     color: '#fff',
   },
+  previewContainer: {
+    backgroundColor: '#1a1a1a',
+    borderBottomLeftRadius: 12,
+    borderBottomRightRadius: 12,
+    borderWidth: 2,
+    borderTopWidth: 0,
+    borderColor: '#e63946',
+    marginTop: -12,
+    marginBottom: 12,
+    overflow: 'hidden',
+  },
+  previewItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: '#252525',
+  },
+  previewImage: {
+    width: 40,
+    height: 56,
+    borderRadius: 4,
+  },
+  previewContent: {
+    flex: 1,
+    marginLeft: 12,
+  },
+  previewTitle: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#fff',
+    marginBottom: 4,
+  },
+  previewMeta: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  previewScoreBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+  },
+  previewScoreText: {
+    color: '#ffd700',
+    fontSize: 12,
+  },
+  previewMetaText: {
+    color: '#888',
+    fontSize: 12,
+  },
+  previewSearchAll: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    paddingVertical: 12,
+    backgroundColor: '#252525',
+  },
+  previewSearchAllText: {
+    color: '#e63946',
+    fontSize: 13,
+    fontWeight: '600',
+  },
   searchButton: {
     backgroundColor: '#e63946',
     borderRadius: 12,
@@ -832,6 +1128,73 @@ const styles = StyleSheet.create({
   searchButtonText: {
     color: '#fff',
     fontSize: 16,
+    fontWeight: '600',
+  },
+  sortContainer: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: 20,
+    paddingVertical: 8,
+  },
+  resultsCount: {
+    color: '#888',
+    fontSize: 14,
+  },
+  sortButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: '#1a1a1a',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 8,
+  },
+  sortButtonText: {
+    color: '#fff',
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  sortModalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.8)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 20,
+  },
+  sortModalContent: {
+    backgroundColor: '#1a1a1a',
+    borderRadius: 16,
+    padding: 20,
+    width: '100%',
+    maxWidth: 300,
+  },
+  sortModalTitle: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    color: '#fff',
+    marginBottom: 16,
+    textAlign: 'center',
+  },
+  sortModalOption: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    paddingVertical: 14,
+    paddingHorizontal: 12,
+    borderRadius: 10,
+    marginBottom: 4,
+  },
+  sortModalOptionActive: {
+    backgroundColor: '#252525',
+  },
+  sortModalOptionText: {
+    flex: 1,
+    fontSize: 16,
+    color: '#888',
+  },
+  sortModalOptionTextActive: {
+    color: '#fff',
     fontWeight: '600',
   },
   resultsContainer: {
@@ -1022,7 +1385,6 @@ const styles = StyleSheet.create({
     fontSize: 14,
     lineHeight: 22,
   },
-  // Related Items Styles
   relatedSection: {
     marginBottom: 20,
     backgroundColor: '#252525',

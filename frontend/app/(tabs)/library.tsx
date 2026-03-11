@@ -21,6 +21,7 @@ const API_BASE = process.env.EXPO_PUBLIC_BACKEND_URL;
 
 type MediaType = 'anime' | 'manga';
 type LibraryStatus = 'watched' | 'watchlist';
+type SortOption = 'date_added' | 'title' | 'score' | 'date_updated';
 
 interface LibraryItem {
   id: string;
@@ -46,6 +47,13 @@ interface Translation {
 type FilterType = 'all' | 'watched' | 'watchlist';
 type MediaFilterType = 'all' | 'anime' | 'manga';
 
+const SORT_OPTIONS: { key: SortOption; label: string; icon: string }[] = [
+  { key: 'date_added', label: 'Date d\'ajout', icon: 'calendar' },
+  { key: 'date_updated', label: 'Dernière modification', icon: 'time' },
+  { key: 'title', label: 'Titre A-Z', icon: 'text' },
+  { key: 'score', label: 'Note', icon: 'star' },
+];
+
 export default function LibraryScreen() {
   const [items, setItems] = useState<LibraryItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -61,6 +69,10 @@ export default function LibraryScreen() {
   const [translating, setTranslating] = useState(false);
   const [titleTranslations, setTitleTranslations] = useState<{[key: string]: string}>({});
   const [translatingTitles, setTranslatingTitles] = useState(false);
+  
+  // Sort state
+  const [sortBy, setSortBy] = useState<SortOption>('date_added');
+  const [showSortModal, setShowSortModal] = useState(false);
 
   const translateLibraryTitles = useCallback(async (libraryItems: LibraryItem[]) => {
     if (libraryItems.length === 0) return;
@@ -125,6 +137,26 @@ export default function LibraryScreen() {
     fetchLibrary();
   }, [fetchLibrary]);
 
+  const sortItems = useCallback((itemsToSort: LibraryItem[], sort: SortOption): LibraryItem[] => {
+    const sorted = [...itemsToSort];
+    switch (sort) {
+      case 'score':
+        return sorted.sort((a, b) => (b.score || 0) - (a.score || 0));
+      case 'title':
+        return sorted.sort((a, b) => {
+          const titleA = titleTranslations[String(a.mal_id)] || a.title_english || a.title;
+          const titleB = titleTranslations[String(b.mal_id)] || b.title_english || b.title;
+          return titleA.localeCompare(titleB, 'fr');
+        });
+      case 'date_added':
+        return sorted.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+      case 'date_updated':
+        return sorted.sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime());
+      default:
+        return sorted;
+    }
+  }, [titleTranslations]);
+
   const translateContent = async (item: LibraryItem) => {
     setTranslating(true);
     try {
@@ -162,7 +194,7 @@ export default function LibraryScreen() {
         status: newStatus,
       });
       setItems(prev => prev.map(i => 
-        i.id === item.id ? { ...i, status: newStatus } : i
+        i.id === item.id ? { ...i, status: newStatus, updated_at: new Date().toISOString() } : i
       ));
       setSelectedItem(prev => prev ? { ...prev, status: newStatus } : null);
     } catch (error) {
@@ -213,6 +245,9 @@ export default function LibraryScreen() {
     return selectedItem?.synopsis || '';
   };
 
+  // Get sorted items
+  const sortedItems = sortItems(items, sortBy);
+
   const renderItem = ({ item }: { item: LibraryItem }) => {
     const displayTitle = getCardTitle(item);
     const showOriginalTitle = titleTranslations[String(item.mal_id)] && 
@@ -261,10 +296,10 @@ export default function LibraryScreen() {
               </View>
             )}
             {item.episodes && (
-              <Text style={styles.metaText}>{item.episodes} épisodes</Text>
+              <Text style={styles.metaText}>{item.episodes} ép.</Text>
             )}
             {item.chapters && (
-              <Text style={styles.metaText}>{item.chapters} chapitres</Text>
+              <Text style={styles.metaText}>{item.chapters} ch.</Text>
             )}
           </View>
           <View style={[
@@ -356,49 +391,60 @@ export default function LibraryScreen() {
         </ScrollView>
       </View>
 
-      {/* Media Type Filter */}
-      <View style={styles.mediaFilterContainer}>
+      {/* Media Type Filter + Sort */}
+      <View style={styles.filtersRow}>
+        <View style={styles.mediaFilterContainer}>
+          <TouchableOpacity
+            style={[
+              styles.mediaFilterButton,
+              mediaFilter === 'all' && styles.mediaFilterButtonActive,
+            ]}
+            onPress={() => setMediaFilter('all')}
+          >
+            <Text style={[
+              styles.mediaFilterText,
+              mediaFilter === 'all' && styles.mediaFilterTextActive,
+            ]}>
+              Tous
+            </Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[
+              styles.mediaFilterButton,
+              mediaFilter === 'anime' && styles.mediaFilterButtonActive,
+            ]}
+            onPress={() => setMediaFilter('anime')}
+          >
+            <Text style={[
+              styles.mediaFilterText,
+              mediaFilter === 'anime' && styles.mediaFilterTextActive,
+            ]}>
+              Anime
+            </Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[
+              styles.mediaFilterButton,
+              mediaFilter === 'manga' && styles.mediaFilterButtonActive,
+            ]}
+            onPress={() => setMediaFilter('manga')}
+          >
+            <Text style={[
+              styles.mediaFilterText,
+              mediaFilter === 'manga' && styles.mediaFilterTextActive,
+            ]}>
+              Manga
+            </Text>
+          </TouchableOpacity>
+        </View>
+        
+        {/* Sort Button */}
         <TouchableOpacity
-          style={[
-            styles.mediaFilterButton,
-            mediaFilter === 'all' && styles.mediaFilterButtonActive,
-          ]}
-          onPress={() => setMediaFilter('all')}
+          style={styles.sortButton}
+          onPress={() => setShowSortModal(true)}
         >
-          <Text style={[
-            styles.mediaFilterText,
-            mediaFilter === 'all' && styles.mediaFilterTextActive,
-          ]}>
-            Tous
-          </Text>
-        </TouchableOpacity>
-        <TouchableOpacity
-          style={[
-            styles.mediaFilterButton,
-            mediaFilter === 'anime' && styles.mediaFilterButtonActive,
-          ]}
-          onPress={() => setMediaFilter('anime')}
-        >
-          <Text style={[
-            styles.mediaFilterText,
-            mediaFilter === 'anime' && styles.mediaFilterTextActive,
-          ]}>
-            Anime
-          </Text>
-        </TouchableOpacity>
-        <TouchableOpacity
-          style={[
-            styles.mediaFilterButton,
-            mediaFilter === 'manga' && styles.mediaFilterButtonActive,
-          ]}
-          onPress={() => setMediaFilter('manga')}
-        >
-          <Text style={[
-            styles.mediaFilterText,
-            mediaFilter === 'manga' && styles.mediaFilterTextActive,
-          ]}>
-            Manga
-          </Text>
+          <Ionicons name={SORT_OPTIONS.find(o => o.key === sortBy)?.icon as any || 'swap-vertical'} size={16} color="#e63946" />
+          <Ionicons name="chevron-down" size={14} color="#888" />
         </TouchableOpacity>
       </View>
 
@@ -429,13 +475,13 @@ export default function LibraryScreen() {
               </View>
             )}
             <FlashList
-              data={items}
+              data={sortedItems}
               renderItem={renderItem}
               estimatedItemSize={150}
               keyExtractor={(item) => item.id}
               contentContainerStyle={styles.listContent}
               showsVerticalScrollIndicator={false}
-              extraData={titleTranslations}
+              extraData={{ titleTranslations, sortBy }}
               refreshControl={
                 <RefreshControl
                   refreshing={refreshing}
@@ -447,6 +493,52 @@ export default function LibraryScreen() {
           </>
         )}
       </View>
+
+      {/* Sort Modal */}
+      <Modal
+        visible={showSortModal}
+        animationType="fade"
+        transparent={true}
+        onRequestClose={() => setShowSortModal(false)}
+      >
+        <TouchableOpacity
+          style={styles.sortModalOverlay}
+          activeOpacity={1}
+          onPress={() => setShowSortModal(false)}
+        >
+          <View style={styles.sortModalContent}>
+            <Text style={styles.sortModalTitle}>Trier par</Text>
+            {SORT_OPTIONS.map((option) => (
+              <TouchableOpacity
+                key={option.key}
+                style={[
+                  styles.sortModalOption,
+                  sortBy === option.key && styles.sortModalOptionActive,
+                ]}
+                onPress={() => {
+                  setSortBy(option.key);
+                  setShowSortModal(false);
+                }}
+              >
+                <Ionicons
+                  name={option.icon as any}
+                  size={20}
+                  color={sortBy === option.key ? '#e63946' : '#888'}
+                />
+                <Text style={[
+                  styles.sortModalOptionText,
+                  sortBy === option.key && styles.sortModalOptionTextActive,
+                ]}>
+                  {option.label}
+                </Text>
+                {sortBy === option.key && (
+                  <Ionicons name="checkmark" size={20} color="#e63946" />
+                )}
+              </TouchableOpacity>
+            ))}
+          </View>
+        </TouchableOpacity>
+      </Modal>
 
       {/* Detail Modal */}
       <Modal
@@ -680,10 +772,16 @@ const styles = StyleSheet.create({
   filterTextActive: {
     color: '#fff',
   },
-  mediaFilterContainer: {
+  filtersRow: {
     flexDirection: 'row',
+    alignItems: 'center',
     paddingHorizontal: 20,
     marginBottom: 12,
+    gap: 10,
+  },
+  mediaFilterContainer: {
+    flex: 1,
+    flexDirection: 'row',
     gap: 8,
   },
   mediaFilterButton: {
@@ -705,6 +803,57 @@ const styles = StyleSheet.create({
   },
   mediaFilterTextActive: {
     color: '#e63946',
+  },
+  sortButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: '#1a1a1a',
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderRadius: 10,
+  },
+  sortModalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.8)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 20,
+  },
+  sortModalContent: {
+    backgroundColor: '#1a1a1a',
+    borderRadius: 16,
+    padding: 20,
+    width: '100%',
+    maxWidth: 300,
+  },
+  sortModalTitle: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    color: '#fff',
+    marginBottom: 16,
+    textAlign: 'center',
+  },
+  sortModalOption: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    paddingVertical: 14,
+    paddingHorizontal: 12,
+    borderRadius: 10,
+    marginBottom: 4,
+  },
+  sortModalOptionActive: {
+    backgroundColor: '#252525',
+  },
+  sortModalOptionText: {
+    flex: 1,
+    fontSize: 16,
+    color: '#888',
+  },
+  sortModalOptionTextActive: {
+    color: '#fff',
+    fontWeight: '600',
   },
   listContainer: {
     flex: 1,
