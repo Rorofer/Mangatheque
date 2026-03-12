@@ -113,15 +113,22 @@ export default function SearchScreen() {
             `${API_BASE}/api/search/${mediaType}`,
             { params: { q: searchQuery, limit: 5 }, timeout: 10000 }
           );
-          setPreviewResults(response.data.data);
-          setShowPreview(true);
-        } catch (error) {
-          console.error('Preview error:', error);
+          if (response.data?.data) {
+            setPreviewResults(response.data.data);
+            setShowPreview(true);
+          }
+        } catch (error: any) {
+          // Silently handle network errors for preview (non-critical feature)
+          // Only log in development, don't show to user
+          if (__DEV__ && error?.code !== 'ERR_NETWORK') {
+            console.log('Preview search unavailable');
+          }
           setPreviewResults([]);
+          setShowPreview(false);
         } finally {
           setLoadingPreview(false);
         }
-      }, 300);
+      }, 500); // Increased debounce to reduce network requests
     } else {
       setPreviewResults([]);
       setShowPreview(false);
