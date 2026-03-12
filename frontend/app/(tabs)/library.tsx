@@ -35,6 +35,7 @@ interface LibraryItem {
   episodes: number | null;
   chapters: number | null;
   status: LibraryStatus;
+  user_rating: number | null;
   created_at: string;
   updated_at: string;
 }
@@ -204,6 +205,20 @@ export default function LibraryScreen() {
       }
     } finally {
       setUpdating(false);
+    }
+  };
+
+  const updateUserRating = async (item: LibraryItem, rating: number) => {
+    try {
+      await axios.put(`${API_BASE}/api/library/${item.id}`, {
+        user_rating: rating,
+      });
+      setItems(prev => prev.map(i => 
+        i.id === item.id ? { ...i, user_rating: rating, updated_at: new Date().toISOString() } : i
+      ));
+      setSelectedItem(prev => prev ? { ...prev, user_rating: rating } : null);
+    } catch (error) {
+      console.error('Rating update error:', error);
     }
   };
 
@@ -620,6 +635,29 @@ export default function LibraryScreen() {
                   <Text style={styles.currentStatusText}>
                     Statut actuel: {selectedItem.status === 'watched' ? 'Vu' : 'À voir'}
                   </Text>
+                </View>
+
+                {/* User Rating Section */}
+                <View style={styles.ratingSection}>
+                  <Text style={styles.ratingSectionTitle}>Ma note</Text>
+                  <View style={styles.starsContainer}>
+                    {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((star) => (
+                      <TouchableOpacity
+                        key={star}
+                        onPress={() => updateUserRating(selectedItem, star)}
+                        style={styles.starButton}
+                      >
+                        <Ionicons
+                          name={star <= (selectedItem.user_rating || 0) ? 'star' : 'star-outline'}
+                          size={24}
+                          color={star <= (selectedItem.user_rating || 0) ? '#ffd700' : '#444'}
+                        />
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+                  {selectedItem.user_rating && (
+                    <Text style={styles.ratingValue}>{selectedItem.user_rating}/10</Text>
+                  )}
                 </View>
                 
                 {/* Translated Synopsis */}
@@ -1184,5 +1222,31 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontSize: 16,
     fontWeight: '600',
+  },
+  ratingSection: {
+    backgroundColor: '#252525',
+    borderRadius: 12,
+    padding: 16,
+    marginBottom: 16,
+    alignItems: 'center',
+  },
+  ratingSectionTitle: {
+    fontSize: 14,
+    color: '#888',
+    marginBottom: 12,
+    fontWeight: '600',
+  },
+  starsContainer: {
+    flexDirection: 'row',
+    gap: 2,
+  },
+  starButton: {
+    padding: 2,
+  },
+  ratingValue: {
+    marginTop: 8,
+    fontSize: 18,
+    fontWeight: 'bold',
+    color: '#ffd700',
   },
 });

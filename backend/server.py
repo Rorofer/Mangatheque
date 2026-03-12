@@ -59,6 +59,8 @@ class LibraryItem(BaseModel):
     episodes: Optional[int] = None  # For anime
     chapters: Optional[int] = None  # For manga
     status: LibraryStatus
+    user_rating: Optional[float] = None  # Personal rating 1-10
+    genres: Optional[List[str]] = None  # For statistics
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 
@@ -73,9 +75,11 @@ class LibraryItemCreate(BaseModel):
     episodes: Optional[int] = None
     chapters: Optional[int] = None
     status: LibraryStatus
+    genres: Optional[List[str]] = None
 
 class LibraryItemUpdate(BaseModel):
-    status: LibraryStatus
+    status: Optional[LibraryStatus] = None
+    user_rating: Optional[float] = None  # Personal rating 1-10
 
 class StatusCheck(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
@@ -255,10 +259,16 @@ async def add_to_library(item: LibraryItemCreate):
 
 @api_router.put("/library/{item_id}", response_model=LibraryItem)
 async def update_library_item(item_id: str, update: LibraryItemUpdate):
-    """Update an item's status in the library"""
+    """Update an item's status or rating in the library"""
+    update_data = {"updated_at": datetime.utcnow()}
+    if update.status is not None:
+        update_data["status"] = update.status.value
+    if update.user_rating is not None:
+        update_data["user_rating"] = update.user_rating
+    
     result = await db.library.find_one_and_update(
         {"id": item_id},
-        {"$set": {"status": update.status.value, "updated_at": datetime.utcnow()}},
+        {"$set": update_data},
         return_document=True
     )
     
@@ -288,6 +298,181 @@ async def check_in_library(mal_id: int, media_type: MediaType):
     if item:
         return {"in_library": True, "item": LibraryItem(**item)}
     return {"in_library": False, "item": None}
+
+# Statistics endpoint
+@api_router.get("/library/stats")
+async def get_library_stats():
+    """Get user's library statistics"""
+    items = await db.library.find().to_list(1000)
+    
+    if not items:
+        return {
+            "total_items": 0,
+            "total_anime": 0,
+            "total_manga": 0,
+            "watched_count": 0,
+            "watchlist_count": 0,
+            "total_episodes": 0,
+            "total_chapters": 0,
+            "average_score": 0,
+            "average_user_rating": 0,
+            "estimated_watch_time_hours": 0,
+            "top_rated": [],
+            "recently_added": [],
+        }
+    
+    total_anime = len([i for i in items if i.get("media_type") == "anime"])
+    total_manga = len([i for i in items if i.get("media_type") == "manga"])
+    watched_count = len([i for i in items if i.get("status") == "watched"])
+    watchlist_count = len([i for i in items if i.get("status") == "watchlist"])
+    
+    # Calculate totals
+    total_episodes = sum(i.get("episodes", 0) or 0 for i in items if i.get("status") == "watched" and i.get("media_type") == "anime")
+    total_chapters = sum(i.get("chapters", 0) or 0 for i in items if i.get("status") == "watched" and i.get("media_type") == "manga")
+    
+    # Average scores
+    scores = [i.get("score") for i in items if i.get("score")]
+    average_score = sum(scores) / len(scores) if scores else 0
+    
+    user_ratings = [i.get("user_rating") for i in items if i.get("user_rating")]
+    average_user_rating = sum(user_ratings) / len(user_ratings) if user_ratings else 0
+    
+    # Estimated watch time (average 24 min per episode)
+    estimated_watch_time_hours = round((total_episodes * 24) / 60, 1)
+    
+    # Top rated by user
+    rated_items = [i for i in items if i.get("user_rating")]
+    top_rated = sorted(rated_items, key=lambda x: x.get("user_rating", 0), reverse=True)[:5]
+    
+    # Recently added
+    recently_added = sorted(items, key=lambda x: x.get("created_at", ""), reverse=True)[:5]
+    
+    return {
+        "total_items": len(items),
+        "total_anime": total_anime,
+        "total_manga": total_manga,
+        "watched_count": watched_count,
+        "watchlist_count": watchlist_count,
+        "total_episodes": total_episodes,
+        "total_chapters": total_chapters,
+        "average_score": round(average_score, 1),
+        "average_user_rating": round(average_user_rating, 1),
+        "estimated_watch_time_hours": estimated_watch_time_hours,
+        "top_rated": [LibraryItem(**i).dict() for i in top_rated],
+        "recently_added": [LibraryItem(**i).dict() for i in recently_added],
+    }
+
+# Random suggestion from watchlist
+@api_router.get("/library/random")
+async def get_random_suggestion():
+    """Get a random suggestion from the watchlist"""
+    import random
+    
+    watchlist_items = await db.library.find({"status": "watchlist"}).to_list(1000)
+    
+    if not watchlist_items:
+        return {"suggestion": None, "message": "Votre liste 'À voir' est vide!"}
+    
+    random_item = random.choice(watchlist_items)
+    return {"suggestion": LibraryItem(**random_item), "message": "Pourquoi pas celui-ci ce soir?"}
+
+# Trending anime/manga from Jikan API
+@api_router.get("/trending/{media_type}")
+async def get_trending(media_type: MediaType, filter: str = "airing"):
+    """Get trending/top anime or manga"""
+    try:
+        async with httpx.AsyncClient() as http_client:
+            # Different endpoints based on filter
+            if media_type == MediaType.ANIME:
+                if filter == "airing":
+                    url = f"{JIKAN_API_BASE}/top/anime?filter=airing&limit=10"
+                elif filter == "upcoming":
+                    url = f"{JIKAN_API_BASE}/top/anime?filter=upcoming&limit=10"
+                elif filter == "popular":
+                    url = f"{JIKAN_API_BASE}/top/anime?filter=bypopularity&limit=10"
+                else:
+                    url = f"{JIKAN_API_BASE}/top/anime?limit=10"
+            else:
+                if filter == "publishing":
+                    url = f"{JIKAN_API_BASE}/top/manga?filter=publishing&limit=10"
+                elif filter == "popular":
+                    url = f"{JIKAN_API_BASE}/top/manga?filter=bypopularity&limit=10"
+                else:
+                    url = f"{JIKAN_API_BASE}/top/manga?limit=10"
+            
+            response = await http_client.get(url, timeout=30.0)
+            response.raise_for_status()
+            data = response.json()
+            
+            results = []
+            for item in data.get("data", []):
+                genres = [g.get("name") for g in item.get("genres", [])]
+                results.append({
+                    "mal_id": item.get("mal_id"),
+                    "title": item.get("title"),
+                    "title_english": item.get("title_english"),
+                    "image_url": item.get("images", {}).get("jpg", {}).get("large_image_url") or item.get("images", {}).get("jpg", {}).get("image_url"),
+                    "synopsis": item.get("synopsis"),
+                    "score": item.get("score"),
+                    "episodes": item.get("episodes"),
+                    "chapters": item.get("chapters"),
+                    "media_type": media_type.value,
+                    "status": item.get("status"),
+                    "genres": genres,
+                    "rank": item.get("rank"),
+                    "members": item.get("members"),
+                })
+            
+            return {"data": results}
+            
+    except httpx.TimeoutException:
+        raise HTTPException(status_code=504, detail="Request timed out")
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=e.response.status_code, detail="Error from Jikan API")
+    except Exception as e:
+        logger.error(f"Trending error: {str(e)}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+# Seasonal anime
+@api_router.get("/seasonal")
+async def get_seasonal_anime(year: int = None, season: str = None):
+    """Get seasonal anime"""
+    try:
+        async with httpx.AsyncClient() as http_client:
+            if year and season:
+                url = f"{JIKAN_API_BASE}/seasons/{year}/{season}?limit=15"
+            else:
+                url = f"{JIKAN_API_BASE}/seasons/now?limit=15"
+            
+            response = await http_client.get(url, timeout=30.0)
+            response.raise_for_status()
+            data = response.json()
+            
+            results = []
+            for item in data.get("data", []):
+                genres = [g.get("name") for g in item.get("genres", [])]
+                results.append({
+                    "mal_id": item.get("mal_id"),
+                    "title": item.get("title"),
+                    "title_english": item.get("title_english"),
+                    "image_url": item.get("images", {}).get("jpg", {}).get("large_image_url") or item.get("images", {}).get("jpg", {}).get("image_url"),
+                    "synopsis": item.get("synopsis"),
+                    "score": item.get("score"),
+                    "episodes": item.get("episodes"),
+                    "media_type": "anime",
+                    "status": item.get("status"),
+                    "genres": genres,
+                    "season": item.get("season"),
+                    "year": item.get("year"),
+                })
+            
+            return {"data": results, "season_info": data.get("pagination", {})}
+            
+    except httpx.TimeoutException:
+        raise HTTPException(status_code=504, detail="Request timed out")
+    except Exception as e:
+        logger.error(f"Seasonal error: {str(e)}")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 # Translation Models
 class TranslationRequest(BaseModel):

@@ -4,6 +4,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { TabView, SceneMap, TabBar } from 'react-native-tab-view';
 import SearchScreen from './index';
 import LibraryScreen from './library';
+import DiscoverScreen from './discover';
 import SettingsModal from './settings';
 import { useSettings } from '../../contexts/SettingsContext';
 
@@ -12,10 +13,12 @@ const { width: SCREEN_WIDTH } = Dimensions.get('window');
 // Wrap screens in functions for TabView
 const SearchRoute = () => <SearchScreen />;
 const LibraryRoute = () => <LibraryScreen />;
+const DiscoverRoute = () => <DiscoverScreen />;
 
 const renderScene = SceneMap({
   search: SearchRoute,
   library: LibraryRoute,
+  discover: DiscoverRoute,
 });
 
 export default function TabLayout() {
@@ -27,6 +30,7 @@ export default function TabLayout() {
   const [routes] = useState([
     { key: 'search', title: 'Recherche', icon: 'search' },
     { key: 'library', title: 'Bibliothèque', icon: 'library' },
+    { key: 'discover', title: 'Découvrir', icon: 'compass' },
   ]);
 
   const renderTabBar = (props: any) => (
