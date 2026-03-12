@@ -14,6 +14,7 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import axios from 'axios';
 import { useFocusEffect } from 'expo-router';
+import TinderDiscovery from '../../components/TinderDiscovery';
 
 const API_BASE = process.env.EXPO_PUBLIC_BACKEND_URL;
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
@@ -61,6 +62,7 @@ export default function DiscoverScreen() {
   const [modalVisible, setModalVisible] = useState(false);
   const [addingToLibrary, setAddingToLibrary] = useState(false);
   const [trendingFilter, setTrendingFilter] = useState<'airing' | 'popular' | 'upcoming'>('airing');
+  const [showTinderMode, setShowTinderMode] = useState(false);
 
   const fetchStats = async () => {
     try {
@@ -261,6 +263,30 @@ export default function DiscoverScreen() {
           ) : (
             <Text style={styles.emptyText}>Aucune donnée</Text>
           )}
+        </View>
+
+        {/* Tinder Discovery Section */}
+        <View style={styles.section}>
+          <View style={styles.sectionHeader}>
+            <Ionicons name="flame" size={20} color="#ff6b6b" />
+            <Text style={styles.sectionTitle}>Mode Découverte</Text>
+          </View>
+          
+          <TouchableOpacity
+            style={styles.tinderButton}
+            onPress={() => setShowTinderMode(true)}
+          >
+            <View style={styles.tinderButtonContent}>
+              <View style={styles.tinderIconContainer}>
+                <Ionicons name="heart" size={28} color="#fff" />
+              </View>
+              <View style={styles.tinderTextContainer}>
+                <Text style={styles.tinderButtonTitle}>Swipe pour découvrir</Text>
+                <Text style={styles.tinderButtonSubtitle}>Style Tinder - Swipez droite ou gauche !</Text>
+              </View>
+            </View>
+            <Ionicons name="chevron-forward" size={24} color="#666" />
+          </TouchableOpacity>
         </View>
 
         {/* Random Suggestion Section */}
@@ -477,6 +503,12 @@ export default function DiscoverScreen() {
           </View>
         </View>
       </Modal>
+
+      {/* Tinder Discovery Mode */}
+      <TinderDiscovery 
+        visible={showTinderMode} 
+        onClose={() => setShowTinderMode(false)} 
+      />
     </View>
   );
 }
@@ -557,6 +589,43 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontSize: 16,
     fontWeight: '600',
+  },
+  tinderButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: '#1a1a1a',
+    borderRadius: 16,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: '#ff6b6b33',
+  },
+  tinderButtonContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 14,
+    flex: 1,
+  },
+  tinderIconContainer: {
+    width: 50,
+    height: 50,
+    borderRadius: 25,
+    backgroundColor: '#ff6b6b',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  tinderTextContainer: {
+    flex: 1,
+  },
+  tinderButtonTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#fff',
+    marginBottom: 2,
+  },
+  tinderButtonSubtitle: {
+    fontSize: 12,
+    color: '#888',
   },
   suggestionCard: {
     flexDirection: 'row',
