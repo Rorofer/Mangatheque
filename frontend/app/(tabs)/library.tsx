@@ -57,6 +57,7 @@ const SORT_OPTIONS: { key: SortOption; label: string; icon: string }[] = [
 
 export default function LibraryScreen() {
   const [items, setItems] = useState<LibraryItem[]>([]);
+  const [allItems, setAllItems] = useState<LibraryItem[]>([]); // For counting
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [statusFilter, setStatusFilter] = useState<FilterType>('all');
@@ -102,12 +103,23 @@ export default function LibraryScreen() {
 
   const fetchLibrary = useCallback(async () => {
     try {
+      // Fetch all items first for accurate counts
+      const allResponse = await axios.get(`${API_BASE}/api/library`);
+      setAllItems(allResponse.data);
+      
+      // Then fetch filtered items
       const params: any = {};
       if (statusFilter !== 'all') params.status = statusFilter;
       if (mediaFilter !== 'all') params.media_type = mediaFilter;
       
-      const response = await axios.get(`${API_BASE}/api/library`, { params });
-      const libraryItems = response.data;
+      let libraryItems;
+      if (statusFilter === 'all' && mediaFilter === 'all') {
+        libraryItems = allResponse.data;
+      } else {
+        const response = await axios.get(`${API_BASE}/api/library`, { params });
+        libraryItems = response.data;
+      }
+      
       setItems(libraryItems);
       
       // Translate titles
@@ -336,8 +348,9 @@ export default function LibraryScreen() {
   };
 
   const filteredCount = items.length;
-  const watchedCount = items.filter(i => i.status === 'watched').length;
-  const watchlistCount = items.filter(i => i.status === 'watchlist').length;
+  const watchedCount = allItems.filter(i => i.status === 'watched').length;
+  const watchlistCount = allItems.filter(i => i.status === 'watchlist').length;
+  const totalCount = allItems.length;
 
   return (
     <View style={styles.container}>
