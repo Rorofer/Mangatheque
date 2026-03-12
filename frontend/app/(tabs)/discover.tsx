@@ -177,7 +177,7 @@ export default function DiscoverScreen() {
 
   const renderTrendingCard = (item: MediaItem, index: number) => (
     <TouchableOpacity
-      key={item.mal_id}
+      key={`trending-${item.mal_id}-${index}`}
       style={styles.trendingCard}
       onPress={() => openModal(item)}
       activeOpacity={0.8}
@@ -204,9 +204,9 @@ export default function DiscoverScreen() {
     </TouchableOpacity>
   );
 
-  const renderSeasonalCard = (item: MediaItem) => (
+  const renderSeasonalCard = (item: MediaItem, index: number) => (
     <TouchableOpacity
-      key={item.mal_id}
+      key={`seasonal-${item.mal_id}-${index}`}
       style={styles.seasonalCard}
       onPress={() => openModal(item)}
       activeOpacity={0.8}
@@ -397,7 +397,7 @@ export default function DiscoverScreen() {
               showsHorizontalScrollIndicator={false}
               style={styles.horizontalScroll}
             >
-              {seasonal.map(renderSeasonalCard)}
+              {seasonal.map((item, index) => renderSeasonalCard(item, index))}
             </ScrollView>
           )}
         </View>
