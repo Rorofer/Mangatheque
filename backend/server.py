@@ -474,6 +474,80 @@ async def get_seasonal_anime(year: int = None, season: str = None):
         logger.error(f"Seasonal error: {str(e)}")
         raise HTTPException(status_code=500, detail="Internal server error")
 
+# Discovery endpoint for Tinder mode - fetches diverse anime
+@api_router.get("/discover")
+async def get_discover_anime(page: int = 1, exclude_ids: str = ""):
+    """Get anime for discovery mode with pagination and exclusion"""
+    import random
+    
+    try:
+        # Parse excluded IDs
+        excluded = set()
+        if exclude_ids:
+            excluded = set(int(x) for x in exclude_ids.split(",") if x.strip().isdigit())
+        
+        # Also exclude anime already in user's library
+        library_items = await db.library.find({}, {"mal_id": 1}).to_list(1000)
+        for item in library_items:
+            excluded.add(item.get("mal_id"))
+        
+        all_anime = []
+        
+        async with httpx.AsyncClient() as http_client:
+            # Fetch from multiple sources to get variety
+            sources = [
+                f"{JIKAN_API_BASE}/top/anime?page={page}&limit=25",
+                f"{JIKAN_API_BASE}/top/anime?filter=bypopularity&page={page}&limit=25",
+            ]
+            
+            # Add random genre search for more variety
+            genres = [1, 2, 4, 8, 10, 14, 22, 24, 25, 26]  # Action, Adventure, Comedy, Drama, Fantasy, Horror, Romance, Sci-Fi, Shoujo, Shounen
+            random_genre = random.choice(genres)
+            sources.append(f"{JIKAN_API_BASE}/anime?genres={random_genre}&order_by=score&sort=desc&page={page}&limit=25")
+            
+            for url in sources:
+                try:
+                    response = await http_client.get(url, timeout=15.0)
+                    if response.status_code == 200:
+                        data = response.json()
+                        for item in data.get("data", []):
+                            mal_id = item.get("mal_id")
+                            if mal_id and mal_id not in excluded:
+                                genres_list = [g.get("name") for g in item.get("genres", [])]
+                                anime_data = {
+                                    "mal_id": mal_id,
+                                    "title": item.get("title"),
+                                    "title_english": item.get("title_english"),
+                                    "image_url": item.get("images", {}).get("jpg", {}).get("large_image_url") or item.get("images", {}).get("jpg", {}).get("image_url"),
+                                    "synopsis": item.get("synopsis"),
+                                    "score": item.get("score"),
+                                    "episodes": item.get("episodes"),
+                                    "media_type": "anime",
+                                    "genres": genres_list,
+                                }
+                                # Avoid duplicates
+                                if not any(a["mal_id"] == mal_id for a in all_anime):
+                                    all_anime.append(anime_data)
+                                    excluded.add(mal_id)
+                    await asyncio.sleep(0.35)  # Rate limiting for Jikan API
+                except Exception as e:
+                    logger.warning(f"Source fetch error: {e}")
+                    continue
+        
+        # Shuffle for variety
+        random.shuffle(all_anime)
+        
+        return {
+            "data": all_anime[:30],  # Return up to 30 anime
+            "page": page,
+            "total": len(all_anime),
+            "has_more": len(all_anime) > 30
+        }
+            
+    except Exception as e:
+        logger.error(f"Discover error: {str(e)}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
 # Translation Models
 class TranslationRequest(BaseModel):
     title: str

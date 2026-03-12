@@ -41,6 +41,8 @@ export default function TinderDiscovery({ visible, onClose }: Props) {
   const [adding, setAdding] = useState(false);
   const [swipeDirection, setSwipeDirection] = useState<'left' | 'right' | null>(null);
   const [libraryIds, setLibraryIds] = useState<Set<number>>(new Set());
+  const [currentPage, setCurrentPage] = useState(1);
+  const [loadingMore, setLoadingMore] = useState(false);
   
   const position = useRef(new Animated.ValueXY()).current;
   const rotate = position.x.interpolate({
@@ -61,42 +63,51 @@ export default function TinderDiscovery({ visible, onClose }: Props) {
     extrapolate: 'clamp',
   });
 
-  const fetchDiscoverAnime = useCallback(async () => {
+  const fetchDiscoverAnime = useCallback(async (page: number = 1) => {
     setLoading(true);
     try {
-      // Fetch user's library to exclude already added anime
+      // Fetch user's library IDs to track locally
       const libraryResponse = await axios.get(`${API_BASE}/api/library`);
       const libraryMalIds = new Set<number>(libraryResponse.data.map((item: any) => item.mal_id));
       setLibraryIds(libraryMalIds);
       
-      // Fetch top anime
-      const response = await axios.get(`${API_BASE}/api/trending/anime?filter=bypopularity`);
-      const allAnime = response.data.data;
+      // Build exclude_ids string from cards already swiped
+      const swipedIds = cards.map(c => c.mal_id).join(',');
       
-      // Filter out anime already in library
-      const newAnime = allAnime.filter((anime: AnimeCard) => !libraryMalIds.has(anime.mal_id));
+      // Fetch diverse anime from the discover endpoint
+      const response = await axios.get(`${API_BASE}/api/discover`, {
+        params: { 
+          page: page,
+          exclude_ids: swipedIds 
+        },
+        timeout: 30000
+      });
       
-      if (newAnime.length < 5) {
-        // If we don't have enough, fetch more from seasonal
-        const seasonalResponse = await axios.get(`${API_BASE}/api/seasonal`);
-        const seasonalAnime = seasonalResponse.data.data.filter(
-          (anime: AnimeCard) => !libraryMalIds.has(anime.mal_id) && !newAnime.find((a: AnimeCard) => a.mal_id === anime.mal_id)
-        );
-        newAnime.push(...seasonalAnime);
+      const newAnime = response.data.data || [];
+      
+      if (page === 1) {
+        setCards(newAnime);
+        setCurrentIndex(0);
+      } else {
+        // Append new cards
+        setCards(prev => [...prev, ...newAnime]);
       }
       
-      setCards(newAnime);
-      setCurrentIndex(0);
+      setCurrentPage(page);
     } catch (error) {
       console.log('Fetch discover error');
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [cards]);
 
   useEffect(() => {
     if (visible) {
-      fetchDiscoverAnime();
+      // Reset state when opening
+      setCards([]);
+      setCurrentIndex(0);
+      setCurrentPage(1);
+      fetchDiscoverAnime(1);
       position.setValue({ x: 0, y: 0 });
     }
   }, [visible]);
@@ -213,7 +224,39 @@ export default function TinderDiscovery({ visible, onClose }: Props) {
 
   const nextCard = () => {
     position.setValue({ x: 0, y: 0 });
-    setCurrentIndex((prev) => prev + 1);
+    setCurrentIndex((prev) => {
+      const newIndex = prev + 1;
+      // Load more cards when approaching the end
+      if (newIndex >= cards.length - 3 && !loadingMore) {
+        loadMoreCards();
+      }
+      return newIndex;
+    });
+  };
+
+  const loadMoreCards = async () => {
+    if (loadingMore) return;
+    setLoadingMore(true);
+    try {
+      const swipedIds = cards.map(c => c.mal_id).join(',');
+      const response = await axios.get(`${API_BASE}/api/discover`, {
+        params: { 
+          page: currentPage + 1,
+          exclude_ids: swipedIds 
+        },
+        timeout: 30000
+      });
+      
+      const newAnime = response.data.data || [];
+      if (newAnime.length > 0) {
+        setCards(prev => [...prev, ...newAnime]);
+        setCurrentPage(prev => prev + 1);
+      }
+    } catch (error) {
+      console.log('Load more error');
+    } finally {
+      setLoadingMore(false);
+    }
   };
 
   const renderCard = (card: AnimeCard, index: number) => {
