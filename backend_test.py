@@ -11,7 +11,7 @@ import time
 from datetime import datetime
 
 # Use the production URL from frontend environment
-BASE_URL = "https://anime-tracker-83.preview.emergentagent.com/api"
+BASE_URL = "https://anime-vault-100.preview.emergentagent.com/api"
 
 def test_api_connection():
     """Test basic API connection"""
